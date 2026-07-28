@@ -1,0 +1,65 @@
+name: Daily Song
+
+on:
+  schedule:
+    # GitHub cron runs in UTC and Israel shifts its clock twice a year, so we
+    # fire at both 17:00 and 18:00 UTC. The job itself only posts when the local
+    # hour in TIMEZONE is 20, which keeps it at 20:00 Israel time all year.
+    - cron: "0 17 * * *"
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+    inputs:
+      ignore_local_hour:
+        description: "Publish now, without waiting for 20:00 local time"
+        type: boolean
+        default: true
+
+concurrency:
+  group: daily-song
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # so the published-songs database can be committed back
+
+    env:
+      CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      TIMEZONE: Asia/Jerusalem
+      DATABASE_PATH: storage/music_agent.db
+      LOG_LEVEL: INFO
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Publish the daily song
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] \
+             && [ "${{ inputs.ignore_local_hour }}" = "true" ]; then
+            python main.py run-once --once-per-day
+          else
+            python main.py run-once --once-per-day --local-hour 20
+          fi
+
+      - name: Commit the updated song history
+        run: |
+          if [ -n "$(git status --porcelain storage/)" ]; then
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add storage/
+            git commit -m "chore: record today's published song"
+            git push
+          else
+            echo "No new song was published; nothing to commit."
+          fi

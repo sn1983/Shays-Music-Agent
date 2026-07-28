@@ -1,0 +1,106 @@
+# 🎵 Music Nostalgia AI Agent
+
+סוכן AI אוטונומי ששולח כל יום המלצה על שיר Pop/Rock מהעשורים 90's–2020's
+לטלגרם, עם תקציר בעברית בסגנון שדרן רדיו, עובדות מעניינות ולינקים להאזנה.
+
+> **רוצים להתחיל?** כל ההוראות — יצירת הבוט, חיבור לטלגרם האישי ותזמון יומי —
+> נמצאות ב-**[docs/TELEGRAM_SETUP.md](docs/TELEGRAM_SETUP.md)**.
+
+---
+
+## התחלה מהירה
+
+```bash
+pip install -r requirements.txt
+cp .env.example .env          # מלאו CLAUDE_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+
+python main.py test-telegram        # בדיקת חיבור
+python main.py run-once --dry-run   # הרצה יבשה
+python main.py run-once             # שליחה אמיתית
+python main.py schedule             # שליחה יומית ב-20:00
+```
+
+---
+
+## איך זה עובד
+
+```
+                    ┌──────────────── SQLite ────────────────┐
+                    │ מה כבר פורסם · אמנים · שנים · עשורים     │
+                    └───────────────┬───────────────────────┘
+                                    │  היסטוריה
+                                    ▼
+   selector.py  ──►  שלב 1: בחירת שיר  ──►  שלב 2: מחקר  ──►  formatter.py  ──►  Telegram
+   עשור יעד,          Claude, ללא כלים        Claude + חיפוש       תבנית ההודעה         sendPhoto /
+   חסימת אמנים                                 באינטרנט            + כפתורים            sendMessage
+   ושנים חוזרות
+```
+
+1. **מדיניות הבחירה** (`music/selector.py`) — קוד, לא פרומפט. מחשבת את עשור היעד
+   לפי הפער בין ההתפלגות בפועל ליעד (30/30/20/20), ומרכיבה רשימת אמנים, שנים ושירים חסומים.
+2. **שלב הבחירה** (`ai/claude_client.py`) — Claude בוחר שיר תחת האילוצים האלה
+   ומחזיר JSON מובנה.
+3. **שלב המחקר** — Claude עם כלי החיפוש בצד השרת מאמת את השיר, אוסף לינקים
+   ועובדות, וכותב את התקציר בעברית. שדה שלא אומת חוזר כ-`null` במקום להיות מומצא.
+4. **ולידציה** (`pipeline.py`) — כל בחירה נבדקת מול מסד הנתונים, מול הז'אנרים
+   החסומים ומול עשור היעד. בחירה שנפסלה חוזרת למודל עם הסיבה, עד 4 ניסיונות.
+5. **פרסום ותיעוד** — ההודעה נשלחת לטלגרם והשיר נרשם ל-SQLite כדי שלא יחזור.
+
+---
+
+## מבנה הפרויקט
+
+```
+Shays-Music-Agent/
+├── main.py                      # CLI
+├── docs/
+│   ├── PROJECT_SPEC.md          # אפיון המוצר
+│   └── TELEGRAM_SETUP.md        # מדריך ההפעלה המלא בעברית
+├── src/music_agent/
+│   ├── config.py                # קריאת הגדרות מ-.env
+│   ├── models.py                # מודלים + סכמות JSON ל-Claude
+│   ├── pipeline.py              # תזמור התהליך היומי
+│   ├── ai/                      # פרומפטים וקריאות ל-Claude API
+│   ├── music/                   # מדיניות בחירה + עיצוב ההודעה
+│   ├── database/                # SQLite: הגנה מכפילויות ואנליטיקס
+│   ├── telegram/                # Telegram Bot API
+│   └── scheduler/               # תזמון יומי (APScheduler)
+├── tests/                       # pytest
+└── .github/workflows/           # הרצה יומית בענן
+```
+
+---
+
+## כללי הבחירה
+
+| כלל | ערך ברירת מחדל | איפה משנים |
+|---|---|---|
+| חלוקת עשורים | 90's 30% · 2000's 30% · 2010's 20% · 2020's 20% | `DECADE_WEIGHTS` ב-`music/selector.py` |
+| אמן לא חוזר | 30 פרסומים | `ARTIST_COOLDOWN_POSTS` |
+| שנת יציאה לא חוזרת | 10 פרסומים | `YEAR_COOLDOWN_POSTS` |
+| ז'אנרים חסומים | Rap, Metal, Hardcore, Jazz, Classical | `BLOCKED_GENRES` |
+| שיר לא חוזר | לצמיתות | טבלת `published_songs` |
+
+---
+
+## הרצת הבדיקות
+
+```bash
+python -m pytest
+```
+
+הבדיקות מכסות את מדיניות הבחירה, את עיצוב ההודעה (כולל escaping ל-HTML
+ול-MarkdownV2), את שכבת מסד הנתונים ואת ה-pipeline המלא מול סוכן וטלגרם מדומים —
+בלי לגעת ב-API אמיתי.
+
+---
+
+## שלבי פיתוח
+
+- **Phase 1 (הושלם):** Telegram · Claude · SQLite
+- **Phase 2:** פרסום אוטומטי לפייסבוק (Graph API)
+- **Phase 3:** אתר עם ארכיון השירים
+- **Phase 4:** אנליטיקס (הטבלה כבר מכילה `views` / `likes` / `comments`)
+- **Phase 5:** מערכת רב-סוכנית — "ביום הזה במוזיקה", אלבום השבוע, סקרים
+
+האפיון המלא: [docs/PROJECT_SPEC.md](docs/PROJECT_SPEC.md)
