@@ -7,6 +7,7 @@ from conftest import published
 
 from music_agent.config import Settings
 from music_agent.database.repository import SongRepository
+from music_agent.facebook.client import FacebookError, PublishedPost
 from music_agent.models import SongDossier, SongSelection
 from music_agent.music.formatter import TelegramPost
 from music_agent.music.selector import build_plan
@@ -47,6 +48,10 @@ def make_settings(tmp_path, **overrides) -> Settings:
         telegram_bot_token="test-token",
         telegram_chat_id="123",
         telegram_parse_mode="HTML",
+        facebook_enabled=False,
+        facebook_page_id="",
+        facebook_access_token="",
+        facebook_api_version="v21.0",
         database_path=tmp_path / "pipeline.db",
         timezone="Asia/Jerusalem",
         log_level="INFO",
@@ -204,3 +209,68 @@ def test_publication_date_uses_the_configured_timezone(pipeline_parts):
 
     assert repository.recent()[0].date_published == pipeline.now().date()
     assert isinstance(repository.recent()[0].date_published, date)
+
+
+# --------------------------------------------------------------------- #
+# Facebook mirroring (Phase 2)
+# --------------------------------------------------------------------- #
+
+
+class FakeFacebook:
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+        self.published: list[object] = []
+
+    def publish(self, post, *, publish_at=None):
+        if self.error:
+            raise self.error
+        self.published.append(post)
+        return PublishedPost(post_id="page_1_post_42")
+
+
+def test_the_post_is_mirrored_to_facebook_when_enabled(tmp_path, dossier):
+    settings = make_settings(tmp_path, facebook_enabled=True, facebook_page_id="page-1")
+    repository = SongRepository(settings.database_path)
+    repository.initialize()
+    telegram, facebook = FakeTelegram(), FakeFacebook()
+    _, year = target_of(repository)
+    agent = FakeAgent([selection("Natalie Imbruglia", "Torn", year)], dossier)
+
+    results = DailySongPipeline(
+        settings, repository=repository, agent=agent, telegram=telegram, facebook=facebook
+    ).run()
+
+    assert len(facebook.published) == 1
+    assert "🎧 Spotify: https://" in facebook.published[0].message
+    assert results[0].facebook_post_id == "page_1_post_42"
+    assert repository.recent()[0].facebook_post_id == "page_1_post_42"
+
+
+def test_a_facebook_failure_does_not_lose_the_telegram_post(tmp_path, dossier):
+    settings = make_settings(tmp_path, facebook_enabled=True, facebook_page_id="page-1")
+    repository = SongRepository(settings.database_path)
+    repository.initialize()
+    telegram = FakeTelegram()
+    facebook = FakeFacebook(error=FacebookError("Invalid OAuth access token"))
+    _, year = target_of(repository)
+    agent = FakeAgent([selection("Natalie Imbruglia", "Torn", year)], dossier)
+
+    results = DailySongPipeline(
+        settings, repository=repository, agent=agent, telegram=telegram, facebook=facebook
+    ).run()
+
+    assert len(telegram.sent) == 1          # Telegram still went out
+    assert results[0].published             # and the run counts as successful
+    assert results[0].facebook_post_id is None
+    assert repository.total() == 1          # the song is still recorded as published
+
+
+def test_facebook_is_skipped_when_disabled(pipeline_parts):
+    settings, repository, telegram, dossier = pipeline_parts
+    _, year = target_of(repository)
+    agent = FakeAgent([selection("Natalie Imbruglia", "Torn", year)], dossier)
+
+    results = build(settings, repository, telegram, agent).run()
+
+    assert results[0].facebook_post_id is None
+    assert repository.recent()[0].facebook_post_id is None

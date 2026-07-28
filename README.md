@@ -1,10 +1,12 @@
 # 🎵 Music Nostalgia AI Agent
 
 סוכן AI אוטונומי ששולח כל יום המלצה על שיר Pop/Rock מהעשורים 90's–2020's
-לטלגרם, עם תקציר בעברית בסגנון שדרן רדיו, עובדות מעניינות ולינקים להאזנה.
+לטלגרם (ואופציונלית גם לעמוד פייסבוק), עם תקציר בעברית בסגנון שדרן רדיו,
+עובדות מעניינות ולינקים להאזנה.
 
 > **רוצים להתחיל?** כל ההוראות — יצירת הבוט, חיבור לטלגרם האישי ותזמון יומי —
 > נמצאות ב-**[docs/TELEGRAM_SETUP.md](docs/TELEGRAM_SETUP.md)**.
+> לחיבור פייסבוק: **[docs/FACEBOOK_SETUP.md](docs/FACEBOOK_SETUP.md)**.
 
 ---
 
@@ -14,7 +16,8 @@
 pip install -r requirements.txt
 cp .env.example .env          # מלאו CLAUDE_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 
-python main.py test-telegram        # בדיקת חיבור
+python main.py test-telegram        # בדיקת חיבור לטלגרם
+python main.py test-facebook        # בדיקת חיבור לפייסבוק (אופציונלי)
 python main.py run-once --dry-run   # הרצה יבשה
 python main.py run-once             # שליחה אמיתית
 python main.py schedule             # שליחה יומית ב-20:00
@@ -30,10 +33,10 @@ python main.py schedule             # שליחה יומית ב-20:00
                     └───────────────┬───────────────────────┘
                                     │  היסטוריה
                                     ▼
-   selector.py  ──►  שלב 1: בחירת שיר  ──►  שלב 2: מחקר  ──►  formatter.py  ──►  Telegram
-   עשור יעד,          Claude, ללא כלים        Claude + חיפוש       תבנית ההודעה         sendPhoto /
-   חסימת אמנים                                 באינטרנט            + כפתורים            sendMessage
-   ושנים חוזרות
+   selector.py  ──►  שלב 1: בחירת שיר  ──►  שלב 2: מחקר  ──►  formatter.py  ──┬──►  Telegram
+   עשור יעד,          Claude, ללא כלים        Claude + חיפוש       תבנית ההודעה     │     sendPhoto / sendMessage
+   חסימת אמנים                                 באינטרנט                             └──►  Facebook
+   ושנים חוזרות                                                                            Graph API (אופציונלי)
 ```
 
 1. **מדיניות הבחירה** (`music/selector.py`) — קוד, לא פרומפט. מחשבת את עשור היעד
@@ -44,7 +47,8 @@ python main.py schedule             # שליחה יומית ב-20:00
    ועובדות, וכותב את התקציר בעברית. שדה שלא אומת חוזר כ-`null` במקום להיות מומצא.
 4. **ולידציה** (`pipeline.py`) — כל בחירה נבדקת מול מסד הנתונים, מול הז'אנרים
    החסומים ומול עשור היעד. בחירה שנפסלה חוזרת למודל עם הסיבה, עד 4 ניסיונות.
-5. **פרסום ותיעוד** — ההודעה נשלחת לטלגרם והשיר נרשם ל-SQLite כדי שלא יחזור.
+5. **פרסום ותיעוד** — ההודעה נשלחת לטלגרם, ואם פייסבוק מופעל היא ממוזגת גם לשם
+   (כשלון בפייסבוק לא מפיל את ההרצה — טלגרם כבר יצא). השיר נרשם ל-SQLite כדי שלא יחזור.
 
 ---
 
@@ -55,7 +59,8 @@ Shays-Music-Agent/
 ├── main.py                      # CLI
 ├── docs/
 │   ├── PROJECT_SPEC.md          # אפיון המוצר
-│   └── TELEGRAM_SETUP.md        # מדריך ההפעלה המלא בעברית
+│   ├── TELEGRAM_SETUP.md        # מדריך ההפעלה המלא בעברית
+│   └── FACEBOOK_SETUP.md        # מדריך חיבור לפייסבוק
 ├── src/music_agent/
 │   ├── config.py                # קריאת הגדרות מ-.env
 │   ├── models.py                # מודלים + סכמות JSON ל-Claude
@@ -64,6 +69,7 @@ Shays-Music-Agent/
 │   ├── music/                   # מדיניות בחירה + עיצוב ההודעה
 │   ├── database/                # SQLite: הגנה מכפילויות ואנליטיקס
 │   ├── telegram/                # Telegram Bot API
+│   ├── facebook/                # Facebook Graph API
 │   └── scheduler/               # תזמון יומי (APScheduler)
 ├── tests/                       # pytest
 └── .github/workflows/           # הרצה יומית בענן
@@ -98,7 +104,7 @@ python -m pytest
 ## שלבי פיתוח
 
 - **Phase 1 (הושלם):** Telegram · Claude · SQLite
-- **Phase 2:** פרסום אוטומטי לפייסבוק (Graph API)
+- **Phase 2 (הושלם):** פרסום אוטומטי לפייסבוק — פוסט, תמונה ותזמון מראש
 - **Phase 3:** אתר עם ארכיון השירים
 - **Phase 4:** אנליטיקס (הטבלה כבר מכילה `views` / `likes` / `comments`)
 - **Phase 5:** מערכת רב-סוכנית — "ביום הזה במוזיקה", אלבום השבוע, סקרים

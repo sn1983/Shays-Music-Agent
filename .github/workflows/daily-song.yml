@@ -28,6 +28,10 @@ jobs:
       CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      # Optional: leave these secrets unset to keep Facebook publishing off.
+      FACEBOOK_ENABLED: ${{ secrets.FACEBOOK_PAGE_ID != '' }}
+      FACEBOOK_PAGE_ID: ${{ secrets.FACEBOOK_PAGE_ID }}
+      FACEBOOK_ACCESS_TOKEN: ${{ secrets.FACEBOOK_ACCESS_TOKEN }}
       TIMEZONE: Asia/Jerusalem
       DATABASE_PATH: storage/music_agent.db
       LOG_LEVEL: INFO

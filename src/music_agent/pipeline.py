@@ -11,8 +11,9 @@ from zoneinfo import ZoneInfo
 from music_agent.ai.claude_client import AgentError, ClaudeMusicAgent
 from music_agent.config import Settings
 from music_agent.database.repository import SongRepository
+from music_agent.facebook.client import FacebookClient, FacebookError
 from music_agent.models import PublishedSong, SongDossier, SongSelection, decade_of
-from music_agent.music.formatter import PostFormatter, TelegramPost
+from music_agent.music.formatter import FacebookPostFormatter, PostFormatter, TelegramPost
 from music_agent.music.selector import build_plan, is_genre_allowed
 from music_agent.telegram.client import TelegramClient
 
@@ -33,6 +34,7 @@ class PublishResult:
     dossier: SongDossier
     post: TelegramPost
     telegram_message_id: Optional[int]
+    facebook_post_id: Optional[str] = None
     skipped_reason: Optional[str] = None
 
     @property
@@ -41,7 +43,7 @@ class PublishResult:
 
 
 class DailySongPipeline:
-    """Wires the agent, the database and Telegram into one run."""
+    """Wires the agent, the database, Telegram and Facebook into one run."""
 
     def __init__(
         self,
@@ -50,6 +52,7 @@ class DailySongPipeline:
         repository: Optional[SongRepository] = None,
         agent: Optional[ClaudeMusicAgent] = None,
         telegram: Optional[TelegramClient] = None,
+        facebook: Optional[FacebookClient] = None,
     ) -> None:
         self._settings = settings
         self._repository = repository or SongRepository(settings.database_path)
@@ -64,6 +67,18 @@ class DailySongPipeline:
             parse_mode=settings.telegram_parse_mode,
         )
         self._formatter = PostFormatter(settings.telegram_parse_mode)
+        self._facebook_formatter = FacebookPostFormatter()
+        self._facebook = facebook or self._build_facebook_client(settings)
+
+    @staticmethod
+    def _build_facebook_client(settings: Settings) -> Optional[FacebookClient]:
+        if not settings.facebook_enabled:
+            return None
+        return FacebookClient(
+            settings.facebook_page_id,
+            settings.facebook_access_token,
+            api_version=settings.facebook_api_version,
+        )
 
     @property
     def repository(self) -> SongRepository:
@@ -119,6 +134,8 @@ class DailySongPipeline:
         sent = self._telegram.send_post(post)
         logger.info("Sent to Telegram as message %s.", sent.message_id)
 
+        facebook_post_id = self._publish_to_facebook(dossier)
+
         self._repository.add(
             PublishedSong(
                 song_id=selection.song_id,
@@ -130,6 +147,7 @@ class DailySongPipeline:
                 genre=dossier.genre or selection.genre,
                 date_published=today,
                 telegram_message_id=sent.message_id,
+                facebook_post_id=facebook_post_id,
             )
         )
         return PublishResult(
@@ -137,7 +155,25 @@ class DailySongPipeline:
             dossier=dossier,
             post=post,
             telegram_message_id=sent.message_id,
+            facebook_post_id=facebook_post_id,
         )
+
+    def _publish_to_facebook(self, dossier: SongDossier) -> Optional[str]:
+        """Mirror the post to Facebook.
+
+        Telegram is the primary channel and has already been delivered by this
+        point, so a Facebook failure is logged and the run continues rather
+        than losing a song that was published successfully.
+        """
+        if self._facebook is None:
+            return None
+        try:
+            published = self._facebook.publish(self._facebook_formatter.format(dossier))
+        except FacebookError as exc:
+            logger.error("Facebook publishing failed: %s", exc)
+            return None
+        logger.info("Published to Facebook as post %s.", published.post_id)
+        return published.post_id
 
     def _choose_song(self) -> SongSelection:
         """Ask for a pick until one satisfies every hard rule."""
@@ -180,10 +216,15 @@ class DailySongPipeline:
 def summarise(result: PublishResult) -> str:
     """One-line human summary of a run, for logs and the CLI."""
     status = "פורסם" if result.published else f"לא פורסם ({result.skipped_reason})"
+    channels = []
+    if result.telegram_message_id:
+        channels.append("Telegram")
+    if result.facebook_post_id:
+        channels.append("Facebook")
     return (
         f"{status}: {result.selection.artist} – {result.selection.title} "
         f"({result.selection.release_year}) | facts={len(result.dossier.facts)} "
-        f"| links={len(result.post.buttons)}"
+        f"| links={len(result.post.buttons)} | {', '.join(channels) or 'לא נשלח'}"
     )
 
 

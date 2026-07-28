@@ -2,6 +2,7 @@
 """Command line entry point for the Music Nostalgia AI Agent.
 
     python main.py test-telegram     # בדיקה שהבוט מדבר איתך
+    python main.py test-facebook     # בדיקת החיבור לעמוד הפייסבוק
     python main.py run-once          # לבחור שיר, לחקור ולשלוח עכשיו
     python main.py run-once --dry-run
     python main.py schedule          # להישאר פעיל ולשלוח כל יום ב-POST_TIME
@@ -22,6 +23,7 @@ if str(SRC) not in sys.path:
 
 from music_agent.config import ConfigError, Settings, load_settings  # noqa: E402
 from music_agent.database.repository import SongRepository  # noqa: E402
+from music_agent.facebook.client import FacebookClient, FacebookError  # noqa: E402
 from music_agent.logging_setup import configure_logging  # noqa: E402
 from music_agent.pipeline import DailySongPipeline, PipelineError, summarise  # noqa: E402
 from music_agent.scheduler.daily import run_scheduler  # noqa: E402
@@ -57,6 +59,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     commands.add_parser("schedule", help="Run forever and publish daily at POST_TIME.")
     commands.add_parser("test-telegram", help="Verify the bot token and chat id.")
+    commands.add_parser(
+        "test-facebook", help="Verify the Facebook page id and access token."
+    )
     commands.add_parser("init-db", help="Create the SQLite database and tables.")
     commands.add_parser("stats", help="Show how many songs were published per decade.")
 
@@ -72,7 +77,7 @@ def main(argv: list[str] | None = None) -> int:
     if getattr(args, "dry_run", False):
         os.environ["DRY_RUN"] = "true"
 
-    needs_secrets = args.command in {"run-once", "schedule", "test-telegram"}
+    needs_secrets = args.command in {"run-once", "schedule"}
     try:
         settings = load_settings(require_secrets=needs_secrets)
     except ConfigError as exc:
@@ -85,6 +90,7 @@ def main(argv: list[str] | None = None) -> int:
         "run-once": _run_once,
         "schedule": _schedule,
         "test-telegram": _test_telegram,
+        "test-facebook": _test_facebook,
         "init-db": _init_db,
         "stats": _stats,
         "history": _history,
@@ -127,6 +133,14 @@ def _schedule(settings: Settings, _: argparse.Namespace) -> int:
 
 
 def _test_telegram(settings: Settings, _: argparse.Namespace) -> int:
+    if not (settings.telegram_bot_token and settings.telegram_chat_id):
+        print(
+            "חסרים TELEGRAM_BOT_TOKEN או TELEGRAM_CHAT_ID בקובץ .env. "
+            "ראו docs/TELEGRAM_SETUP.md שלבים 1-2.",
+            file=sys.stderr,
+        )
+        return 2
+
     client = TelegramClient(
         settings.telegram_bot_token,
         settings.telegram_chat_id,
@@ -145,6 +159,43 @@ def _test_telegram(settings: Settings, _: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
+    return 0
+
+
+def _test_facebook(settings: Settings, _: argparse.Namespace) -> int:
+    if not (settings.facebook_page_id and settings.facebook_access_token):
+        print(
+            "חסרים FACEBOOK_PAGE_ID או FACEBOOK_ACCESS_TOKEN בקובץ .env. "
+            "ראו docs/FACEBOOK_SETUP.md.",
+            file=sys.stderr,
+        )
+        return 2
+
+    if not settings.facebook_enabled:
+        print(
+            "פרסום לפייסבוק כבוי. הגדירו FACEBOOK_ENABLED=true בקובץ .env "
+            "ומלאו FACEBOOK_PAGE_ID ו-FACEBOOK_ACCESS_TOKEN."
+        )
+        return 1
+
+    client = FacebookClient(
+        settings.facebook_page_id,
+        settings.facebook_access_token,
+        api_version=settings.facebook_api_version,
+    )
+    try:
+        page = client.get_page()
+    except FacebookError as exc:
+        print(f"הבדיקה נכשלה: {exc}", file=sys.stderr)
+        print(
+            "ודאו שהטוקן הוא Page Access Token ארוך-טווח עם ההרשאות "
+            "pages_manage_posts ו-pages_read_engagement. פרטים ב-docs/FACEBOOK_SETUP.md",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(f"מחובר לעמוד: {page.get('name')} (id={page.get('id')})")
+    print("הטוקן תקין. השיר הבא יפורסם גם לפייסבוק.")
     return 0
 
 

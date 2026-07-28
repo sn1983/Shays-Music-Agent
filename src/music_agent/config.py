@@ -27,6 +27,10 @@ class Settings:
     telegram_bot_token: str
     telegram_chat_id: str
     telegram_parse_mode: str
+    facebook_enabled: bool
+    facebook_page_id: str
+    facebook_access_token: str
+    facebook_api_version: str
     database_path: Path
     timezone: str
     log_level: str
@@ -74,6 +78,15 @@ def load_settings(*, require_secrets: bool = True) -> Settings:
     except ValueError as exc:
         raise ConfigError("POST_TIME must look like 'HH:MM', e.g. '20:00'.") from exc
 
+    facebook_enabled = os.getenv("FACEBOOK_ENABLED", "false").strip().lower() in _TRUTHY
+    facebook_page_id = os.getenv("FACEBOOK_PAGE_ID", "").strip()
+    facebook_access_token = os.getenv("FACEBOOK_ACCESS_TOKEN", "").strip()
+    if facebook_enabled and require_secrets and not (facebook_page_id and facebook_access_token):
+        raise ConfigError(
+            "FACEBOOK_ENABLED is on but FACEBOOK_PAGE_ID / FACEBOOK_ACCESS_TOKEN are missing. "
+            "See docs/FACEBOOK_SETUP.md, or set FACEBOOK_ENABLED=false."
+        )
+
     settings = Settings(
         claude_api_key=_require("CLAUDE_API_KEY", allow_missing=not require_secrets),
         claude_model=os.getenv("CLAUDE_MODEL", "claude-opus-5").strip() or "claude-opus-5",
@@ -81,6 +94,10 @@ def load_settings(*, require_secrets: bool = True) -> Settings:
         telegram_bot_token=_require("TELEGRAM_BOT_TOKEN", allow_missing=not require_secrets),
         telegram_chat_id=_require("TELEGRAM_CHAT_ID", allow_missing=not require_secrets),
         telegram_parse_mode=parse_mode,
+        facebook_enabled=facebook_enabled,
+        facebook_page_id=facebook_page_id,
+        facebook_access_token=facebook_access_token,
+        facebook_api_version=os.getenv("FACEBOOK_API_VERSION", "v21.0").strip() or "v21.0",
         database_path=_resolve(os.getenv("DATABASE_PATH", "storage/music_agent.db")),
         timezone=os.getenv("TIMEZONE", "Asia/Jerusalem").strip() or "Asia/Jerusalem",
         log_level=os.getenv("LOG_LEVEL", "INFO").strip().upper() or "INFO",
