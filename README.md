@@ -7,6 +7,7 @@
 > **רוצים להתחיל?** כל ההוראות — יצירת הבוט, חיבור לטלגרם האישי ותזמון יומי —
 > נמצאות ב-**[docs/TELEGRAM_SETUP.md](docs/TELEGRAM_SETUP.md)**.
 > לחיבור פייסבוק: **[docs/FACEBOOK_SETUP.md](docs/FACEBOOK_SETUP.md)**.
+> להרצה על המחשב שלכם בלי Git: **[docs/LOCAL_RUN.md](docs/LOCAL_RUN.md)**.
 
 ---
 
@@ -60,7 +61,8 @@ Shays-Music-Agent/
 ├── docs/
 │   ├── PROJECT_SPEC.md          # אפיון המוצר
 │   ├── TELEGRAM_SETUP.md        # מדריך ההפעלה המלא בעברית
-│   └── FACEBOOK_SETUP.md        # מדריך חיבור לפייסבוק
+│   ├── FACEBOOK_SETUP.md        # מדריך חיבור לפייסבוק
+│   └── LOCAL_RUN.md             # הרצה מקומית ללא Git
 ├── src/music_agent/
 │   ├── config.py                # קריאת הגדרות מ-.env
 │   ├── models.py                # מודלים + סכמות JSON ל-Claude
