@@ -6,6 +6,17 @@ Two stages, both returning structured JSON:
    under the constraints computed by :mod:`music_agent.music.selector`.
 2. :meth:`ClaudeMusicAgent.research_song` — the server-side web search tool, so
    facts and links come from real sources instead of the model's memory.
+
+Both calls are streamed. A research turn that runs many web searches can take
+several minutes, and a non-streaming request that long trips the SDK's HTTP
+read timeout; streaming keeps the connection alive and is the supported way to
+make long agentic calls.
+
+The API can also be transiently unavailable — a `529 Overloaded` at peak time
+is normal and says nothing about the request. Because this agent runs once a
+day, giving up after a few seconds would cost a whole day of publishing, so a
+transient failure is retried with a long backoff and, if the primary model
+stays unavailable, the same request is tried once on a fallback model.
 """
 
 from __future__ import annotations
@@ -13,7 +24,8 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any, Optional
+import time
+from typing import Any, Iterator, Optional
 
 import anthropic
 from pydantic import BaseModel, ValidationError
@@ -42,6 +54,25 @@ _WEB_SEARCH_TOOL: dict[str, Any] = {
 
 _MAX_TOKENS = 16000
 _MAX_PAUSE_RESUMES = 6
+
+#: How long to wait between attempts when the API is overloaded or unreachable.
+#: Overload usually clears within a minute or two, and a daily job can afford
+#: the wait far more than it can afford to skip a day.
+RETRY_DELAYS: tuple[int, ...] = (20, 60, 120)
+
+#: Failures that are worth retrying: nothing about the request caused them.
+_TRANSIENT_ERRORS = (
+    anthropic.OverloadedError,
+    anthropic.InternalServerError,
+    anthropic.RateLimitError,
+    anthropic.APITimeoutError,
+    anthropic.APIConnectionError,
+)
+
+#: Per-request ceiling. Streaming keeps the socket busy, so this only guards
+#: against a genuinely stuck connection.
+REQUEST_TIMEOUT_SECONDS = 900.0
+
 _CODE_FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 
 
@@ -58,12 +89,20 @@ class ClaudeMusicAgent:
         *,
         model: str = "claude-opus-5",
         effort: str = "high",
+        fallback_model: Optional[str] = "claude-sonnet-5",
         client: Optional[anthropic.Anthropic] = None,
+        sleep: Any = time.sleep,
     ) -> None:
-        self._client = client or anthropic.Anthropic(api_key=api_key)
+        self._client = client or anthropic.Anthropic(
+            api_key=api_key,
+            timeout=REQUEST_TIMEOUT_SECONDS,
+            max_retries=3,
+        )
         self._model = model
         self._effort = effort
+        self._fallback_model = fallback_model if fallback_model != model else None
         self._use_fallbacks = model in _FALLBACK_MODELS
+        self._sleep = sleep
 
     def select_song(self, plan: SelectionPlan) -> SongSelection:
         """Stage 1: choose today's song under the given constraints."""
@@ -100,7 +139,6 @@ class ClaudeMusicAgent:
     ) -> dict[str, Any]:
         messages: list[dict[str, Any]] = [{"role": "user", "content": user_prompt}]
         request: dict[str, Any] = {
-            "model": self._model,
             "max_tokens": _MAX_TOKENS,
             "system": system,
             "output_config": {
@@ -140,18 +178,58 @@ class ClaudeMusicAgent:
         raise AgentError("Claude kept pausing the tool loop without producing a result.")
 
     def _call(self, request: dict[str, Any]) -> Any:
-        """Send the request, preferring the server-side refusal fallback path."""
-        if self._use_fallbacks:
+        """Send the request, retrying transient failures and then the fallback model."""
+        last_error: Optional[Exception] = None
+
+        for model in self._candidate_models():
+            for attempt in range(len(RETRY_DELAYS) + 1):
+                try:
+                    return self._send(model, request)
+                except _TRANSIENT_ERRORS as exc:
+                    last_error = exc
+                    if attempt < len(RETRY_DELAYS):
+                        delay = RETRY_DELAYS[attempt]
+                        logger.warning(
+                            "%s is unavailable (%s). Retrying in %ds (attempt %d/%d).",
+                            model,
+                            type(exc).__name__,
+                            delay,
+                            attempt + 1,
+                            len(RETRY_DELAYS),
+                        )
+                        self._sleep(delay)
+                    else:
+                        logger.error("%s still unavailable after %d attempts.", model, attempt + 1)
+
+        raise AgentError(
+            f"The Claude API stayed unavailable across every attempt: {last_error}"
+        ) from last_error
+
+    def _candidate_models(self) -> Iterator[str]:
+        yield self._model
+        if self._fallback_model:
+            logger.warning("Falling back to %s for this request.", self._fallback_model)
+            yield self._fallback_model
+
+    def _send(self, model: str, request: dict[str, Any]) -> Any:
+        """One streamed request. Streaming avoids read timeouts on long turns."""
+        payload = dict(request, model=model)
+
+        if self._use_fallbacks and model in _FALLBACK_MODELS:
             try:
-                return self._client.beta.messages.create(
-                    **request, betas=[_FALLBACK_BETA], fallbacks="default"
-                )
+                with self._client.beta.messages.stream(
+                    **payload, betas=[_FALLBACK_BETA], fallbacks="default"
+                ) as stream:
+                    return stream.get_final_message()
             except (anthropic.BadRequestError, TypeError) as exc:
                 logger.warning(
-                    "Server-side fallbacks unavailable (%s); continuing without them.", exc
+                    "Server-side refusal fallbacks unavailable (%s); continuing without them.",
+                    exc,
                 )
                 self._use_fallbacks = False
-        return self._client.messages.create(**request)
+
+        with self._client.messages.stream(**payload) as stream:
+            return stream.get_final_message()
 
 
 def _extract_json(response: Any) -> dict[str, Any]:
@@ -170,8 +248,10 @@ def _extract_json(response: Any) -> dict[str, Any]:
             continue
         if isinstance(payload, dict):
             return payload
-    raise AgentError(f"No JSON object in the response (stop_reason={response.stop_reason}, "
-                     f"errors={errors or 'no text blocks'}).")
+    raise AgentError(
+        f"No JSON object in the response (stop_reason={response.stop_reason}, "
+        f"errors={errors or 'no text blocks'})."
+    )
 
 
 def _validate(model: type[BaseModel], payload: dict[str, Any]) -> Any:

@@ -297,6 +297,8 @@ crontab -e
 | `credit balance is too low` | אין קרדיט | טענו יתרה ב-Billing |
 | ההודעה מגיעה בלי תמונה | לא נמצאה עטיפה מאומתת | תקין ומכוון: הסוכן לא ממציא לינקים, ושולח טקסט בלבד |
 | `No acceptable song after 4 attempts` | כללי החזרתיות חסמו כל בחירה | לרוב זמני. `python main.py history` יראה מה כבר פורסם |
+| `529 Overloaded` / `The Claude API stayed unavailable` | ה-API של Claude היה עמוס | הסוכן מנסה שוב אוטומטית (20/60/120 שניות) ואז עובר למודל הגיבוי. אם גם זה נכשל — הריצו שוב מאוחר יותר |
+| `חסרות הגדרות` בהרצת GitHub Actions | סוד חסר ב-Actions | Settings → Secrets and variables → Actions |
 | ההודעה נראית עם `\` או תווים מוזרים | מצב עיצוב לא מתאים | הגדירו `TELEGRAM_PARSE_MODE=HTML` |
 
 לוגים מלאים נשמרים ב-`logs/agent.log`.

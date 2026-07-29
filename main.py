@@ -15,13 +15,23 @@ import argparse
 import logging
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 SRC = Path(__file__).resolve().parent / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from music_agent.config import ConfigError, Settings, load_settings  # noqa: E402
+import anthropic  # noqa: E402
+
+from music_agent.ai.claude_client import AgentError  # noqa: E402
+from music_agent.config import (  # noqa: E402
+    ConfigError,
+    Settings,
+    load_settings,
+    missing_publishing_secrets,
+)
 from music_agent.database.repository import SongRepository  # noqa: E402
 from music_agent.facebook.client import FacebookClient, FacebookError  # noqa: E402
 from music_agent.logging_setup import configure_logging  # noqa: E402
@@ -77,9 +87,10 @@ def main(argv: list[str] | None = None) -> int:
     if getattr(args, "dry_run", False):
         os.environ["DRY_RUN"] = "true"
 
-    needs_secrets = args.command in {"run-once", "schedule"}
+    # Credentials are validated per command (see _require_secrets) rather than
+    # at load time, so a run with nothing to do never fails on a missing key.
     try:
-        settings = load_settings(require_secrets=needs_secrets)
+        settings = load_settings(require_secrets=False)
     except ConfigError as exc:
         print(f"שגיאת הגדרות: {exc}", file=sys.stderr)
         return 2
@@ -98,11 +109,25 @@ def main(argv: list[str] | None = None) -> int:
     return handlers[args.command](settings, args)
 
 
-def _run_once(settings: Settings, args: argparse.Namespace) -> int:
-    pipeline = DailySongPipeline(settings)
+def _require_secrets(settings: Settings) -> int:
+    """Return a non-zero exit code (and explain) if a credential is missing."""
+    missing = missing_publishing_secrets(settings)
+    if not missing:
+        return 0
+    print(
+        "חסרות הגדרות בקובץ .env (או בסודות של GitHub Actions): "
+        + ", ".join(missing)
+        + ". ראו docs/TELEGRAM_SETUP.md",
+        file=sys.stderr,
+    )
+    return 2
 
+
+def _run_once(settings: Settings, args: argparse.Namespace) -> int:
+    # The hour guard runs before anything else: on a run that is not due there
+    # is nothing to validate, nothing to send, and no reason to fail.
     if args.local_hour is not None:
-        current_hour = pipeline.now().hour
+        current_hour = datetime.now(ZoneInfo(settings.timezone)).hour
         if current_hour != args.local_hour:
             logger.info(
                 "Local hour is %02d:00 (%s), waiting for %02d:00 — nothing to do.",
@@ -112,9 +137,17 @@ def _run_once(settings: Settings, args: argparse.Namespace) -> int:
             )
             return 0
 
+    if code := _require_secrets(settings):
+        return code
+
+    pipeline = DailySongPipeline(settings)
+
     try:
         results = pipeline.run(once_per_day=args.once_per_day)
-    except (PipelineError, TelegramError) as exc:
+    except anthropic.AuthenticationError:
+        logger.error("Claude rejected the API key. Check CLAUDE_API_KEY.")
+        return 1
+    except (AgentError, PipelineError, TelegramError, anthropic.AnthropicError) as exc:
         logger.error("Run failed: %s", exc)
         return 1
 
@@ -128,6 +161,8 @@ def _run_once(settings: Settings, args: argparse.Namespace) -> int:
 
 
 def _schedule(settings: Settings, _: argparse.Namespace) -> int:
+    if code := _require_secrets(settings):
+        return code
     run_scheduler(settings)
     return 0
 

@@ -60,6 +60,7 @@ class DailySongPipeline:
             settings.claude_api_key,
             model=settings.claude_model,
             effort=settings.claude_effort,
+            fallback_model=settings.claude_fallback_model or None,
         )
         self._telegram = telegram or TelegramClient(
             settings.telegram_bot_token,

@@ -24,6 +24,7 @@ class Settings:
     claude_api_key: str
     claude_model: str
     claude_effort: str
+    claude_fallback_model: str
     telegram_bot_token: str
     telegram_chat_id: str
     telegram_parse_mode: str
@@ -45,6 +46,34 @@ class Settings:
     @property
     def post_minute(self) -> int:
         return int(self.post_time.split(":")[1])
+
+
+def missing_publishing_secrets(settings: "Settings") -> list[str]:
+    """Names of the credentials a real publishing run needs but does not have.
+
+    Kept separate from :func:`load_settings` so a run that turns out to have
+    nothing to do (the wrong hour, a song already published) can exit quietly
+    without demanding credentials it will never use.
+    """
+    missing = [
+        name
+        for name, value in (
+            ("CLAUDE_API_KEY", settings.claude_api_key),
+            ("TELEGRAM_BOT_TOKEN", settings.telegram_bot_token),
+            ("TELEGRAM_CHAT_ID", settings.telegram_chat_id),
+        )
+        if not value
+    ]
+    if settings.facebook_enabled:
+        missing += [
+            name
+            for name, value in (
+                ("FACEBOOK_PAGE_ID", settings.facebook_page_id),
+                ("FACEBOOK_ACCESS_TOKEN", settings.facebook_access_token),
+            )
+            if not value
+        ]
+    return missing
 
 
 def _require(name: str, *, allow_missing: bool) -> str:
@@ -91,6 +120,8 @@ def load_settings(*, require_secrets: bool = True) -> Settings:
         claude_api_key=_require("CLAUDE_API_KEY", allow_missing=not require_secrets),
         claude_model=os.getenv("CLAUDE_MODEL", "claude-opus-5").strip() or "claude-opus-5",
         claude_effort=os.getenv("CLAUDE_EFFORT", "high").strip() or "high",
+        # Used only when the primary model is unavailable; empty disables it.
+        claude_fallback_model=os.getenv("CLAUDE_FALLBACK_MODEL", "claude-sonnet-5").strip(),
         telegram_bot_token=_require("TELEGRAM_BOT_TOKEN", allow_missing=not require_secrets),
         telegram_chat_id=_require("TELEGRAM_CHAT_ID", allow_missing=not require_secrets),
         telegram_parse_mode=parse_mode,

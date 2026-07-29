@@ -45,6 +45,7 @@ def make_settings(tmp_path, **overrides) -> Settings:
         claude_api_key="test-key",
         claude_model="claude-opus-5",
         claude_effort="high",
+        claude_fallback_model="claude-sonnet-5",
         telegram_bot_token="test-token",
         telegram_chat_id="123",
         telegram_parse_mode="HTML",

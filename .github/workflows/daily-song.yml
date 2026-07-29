@@ -21,6 +21,9 @@ concurrency:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    # The agent retries an overloaded API with a long backoff, so a healthy run
+    # can take a few minutes. This is the ceiling before something is wrong.
+    timeout-minutes: 30
     permissions:
       contents: write # so the published-songs database can be committed back
 
@@ -48,6 +51,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Publish the daily song
+        timeout-minutes: 25
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] \
              && [ "${{ inputs.ignore_local_hour }}" = "true" ]; then
@@ -63,7 +67,20 @@ jobs:
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add storage/
             git commit -m "chore: record today's published song"
-            git push
+            # The database is the only thing this job writes, so a push that
+            # races another commit just needs the newer history underneath it.
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
           else
             echo "No new song was published; nothing to commit."
           fi
+
+      - name: Report the failure to Telegram
+        if: failure()
+        continue-on-error: true
+        run: |
+          curl -sS --max-time 30 \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=⚠️ ההרצה היומית נכשלה. הלוג: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            > /dev/null
