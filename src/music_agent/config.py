@@ -136,5 +136,23 @@ def load_settings(*, require_secrets: bool = True) -> Settings:
         songs_per_day=max(1, int(os.getenv("SONGS_PER_DAY", "1") or 1)),
         dry_run=os.getenv("DRY_RUN", "false").strip().lower() in _TRUTHY,
     )
+    _reject_bot_as_chat_target(settings)
     settings.database_path.parent.mkdir(parents=True, exist_ok=True)
     return settings
+
+
+def _reject_bot_as_chat_target(settings: Settings) -> None:
+    """A bot cannot message itself, and the two ids look confusingly alike.
+
+    The digits before the colon in a bot token are the bot's own id, so
+    copying them into TELEGRAM_CHAT_ID produces a 403 only at send time.
+    """
+    token, chat_id = settings.telegram_bot_token, settings.telegram_chat_id
+    if not (token and chat_id) or ":" not in token:
+        return
+    if chat_id.lstrip("-") == token.split(":", 1)[0]:
+        raise ConfigError(
+            "TELEGRAM_CHAT_ID is the bot's own id (the digits before the colon in "
+            "TELEGRAM_BOT_TOKEN), and a bot cannot send messages to itself. Use your "
+            "personal chat id instead — see docs/TELEGRAM_SETUP.md step 2."
+        )

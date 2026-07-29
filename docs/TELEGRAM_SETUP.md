@@ -91,6 +91,12 @@
 
    **המספר שליד `"id"` הוא ה-TELEGRAM_CHAT_ID שלכם** (במקרה הזה `512345678`).
 
+> ⚠️ **הטעות הכי נפוצה:** לקחת את המספר שלפני הנקודתיים בטוקן (למשל `8154392017`
+> מתוך `8154392017:AAH9x7Kq...`). **זה המזהה של הבוט, לא שלכם.** בוט לא יכול לשלוח
+> הודעה לעצמו, ותקבלו `Forbidden: the bot can't send messages to the bot`.
+> ודאו שבתוך ה-JSON בחרתם את ה-`id` שנמצא בתוך `"chat"` — זה שמופיע לצידו
+> `"type": "private"` ו-`"is_bot": false`.
+
 ### אם `getUpdates` מחזיר רשימה ריקה
 
 ```json
@@ -290,6 +296,7 @@ crontab -e
 |---|---|---|
 | `Unauthorized (error_code=401)` | הטוקן שגוי או בוטל | העתיקו מחדש מ-BotFather; ודאו שאין רווחים או גרשיים ב-`.env` |
 | `chat not found (error_code=400)` | ה-chat id שגוי, או שלא לחצתם Start | שלחו `/start` לבוט וחזרו על שלב 2 |
+| `the bot can't send messages to the bot (403)` | ב-`TELEGRAM_CHAT_ID` הוזן המזהה של הבוט | קחו את ה-`id` מתוך `"chat"` ב-getUpdates, לא את המספר שלפני הנקודתיים בטוקן |
 | `bot was blocked by the user` | חסמתם את הבוט | פתחו את השיחה בטלגרם ולחצו **Unblock** |
 | `getUpdates` מחזיר `result: []` | טלגרם לא רשם הודעה נכנסת | שלחו הודעה נוספת לבוט ורעננו |
 | `שגיאת הגדרות: Missing required environment variable` | חסר ערך ב-`.env` | ודאו שהקובץ נקרא בדיוק `.env` ויושב בתיקיית הפרויקט |

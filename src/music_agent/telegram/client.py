@@ -19,6 +19,38 @@ class TelegramError(RuntimeError):
     """Raised when the Bot API rejects a request."""
 
 
+#: Telegram's descriptions are terse and the fix is rarely obvious, so each
+#: known failure carries the concrete thing to change.
+_ERROR_HINTS: tuple[tuple[str, str], ...] = (
+    (
+        "bot can't send messages to the bot",
+        "TELEGRAM_CHAT_ID מצביע על בוט ולא על הצ'אט שלכם. "
+        "המספר שלפני הנקודתיים ב-TELEGRAM_BOT_TOKEN הוא המזהה של הבוט — לא שלכם. "
+        "ראו docs/TELEGRAM_SETUP.md שלב 2.",
+    ),
+    (
+        "chat not found",
+        "TELEGRAM_CHAT_ID שגוי, או שלא שלחתם /start לבוט. ראו docs/TELEGRAM_SETUP.md שלב 2.",
+    ),
+    (
+        "bot was blocked by the user",
+        "חסמתם את הבוט בטלגרם. פתחו את השיחה ולחצו Unblock.",
+    ),
+    (
+        "unauthorized",
+        "TELEGRAM_BOT_TOKEN שגוי או בוטל. העתיקו אותו מחדש מ-@BotFather.",
+    ),
+)
+
+
+def _hint_for(description: str) -> str:
+    lowered = description.lower()
+    for marker, hint in _ERROR_HINTS:
+        if marker in lowered:
+            return f" — {hint}"
+    return ""
+
+
 @dataclass(frozen=True)
 class SentMessage:
     """Identifiers returned by Telegram for a delivered post."""
@@ -100,9 +132,10 @@ class TelegramClient:
             raise TelegramError(f"{method} returned a non-JSON response.") from exc
 
         if not body.get("ok"):
+            description = str(body.get("description", "unknown error"))
             raise TelegramError(
-                f"{method} failed: {body.get('description', 'unknown error')} "
-                f"(error_code={body.get('error_code')})"
+                f"{method} failed: {description} "
+                f"(error_code={body.get('error_code')}){_hint_for(description)}"
             )
         return body["result"]
 
