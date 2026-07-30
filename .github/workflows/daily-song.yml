@@ -2,11 +2,16 @@ name: Daily Song
 
 on:
   schedule:
-    # GitHub cron runs in UTC and Israel shifts its clock twice a year, so we
-    # fire at both 17:00 and 18:00 UTC. The job itself only posts when the local
-    # hour in TIMEZONE is 20, which keeps it at 20:00 Israel time all year.
-    - cron: "0 17 * * *"
-    - cron: "0 18 * * *"
+    # GitHub cron is UTC and best-effort: a trigger routinely fires 20-70
+    # minutes late, and the top of the hour is the most congested slot. So we
+    # ask several times at :07, and the job publishes on the first one that
+    # lands at or after 20:00 local; --once-per-day makes the rest no-ops.
+    # This also absorbs Israel's twice-yearly clock change: in winter the
+    # 17:07 UTC slot is 19:07 local and skips, and 18:07 UTC publishes.
+    - cron: "7 17 * * *"
+    - cron: "7 18 * * *"
+    - cron: "7 19 * * *"
+    - cron: "7 20 * * *"
   workflow_dispatch:
     inputs:
       ignore_local_hour:
@@ -57,7 +62,7 @@ jobs:
              && [ "${{ inputs.ignore_local_hour }}" = "true" ]; then
             python main.py run-once --once-per-day
           else
-            python main.py run-once --once-per-day --local-hour 20
+            python main.py run-once --once-per-day --not-before-hour 20
           fi
 
       - name: Commit the updated song history

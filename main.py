@@ -37,6 +37,7 @@ from music_agent.facebook.client import FacebookClient, FacebookError  # noqa: E
 from music_agent.logging_setup import configure_logging  # noqa: E402
 from music_agent.pipeline import DailySongPipeline, PipelineError, summarise  # noqa: E402
 from music_agent.scheduler.daily import run_scheduler  # noqa: E402
+from music_agent.scheduler.window import is_due  # noqa: E402
 from music_agent.telegram.client import TelegramClient, TelegramError  # noqa: E402
 
 logger = logging.getLogger("music_agent.cli")
@@ -60,11 +61,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do nothing if a song was already published today.",
     )
     run_once.add_argument(
-        "--local-hour",
+        "--not-before-hour",
         type=int,
         default=None,
         metavar="H",
-        help="Exit quietly unless the local hour (TIMEZONE) equals H. Useful for cron in UTC.",
+        help=(
+            "Exit quietly unless the local hour (TIMEZONE) is H or later. "
+            "Tolerates late cron triggers; pair with --once-per-day."
+        ),
     )
 
     commands.add_parser("schedule", help="Run forever and publish daily at POST_TIME.")
@@ -124,18 +128,17 @@ def _require_secrets(settings: Settings) -> int:
 
 
 def _run_once(settings: Settings, args: argparse.Namespace) -> int:
-    # The hour guard runs before anything else: on a run that is not due there
-    # is nothing to validate, nothing to send, and no reason to fail.
-    if args.local_hour is not None:
-        current_hour = datetime.now(ZoneInfo(settings.timezone)).hour
-        if current_hour != args.local_hour:
-            logger.info(
-                "Local hour is %02d:00 (%s), waiting for %02d:00 — nothing to do.",
-                current_hour,
-                settings.timezone,
-                args.local_hour,
-            )
-            return 0
+    # The window check runs before anything else: on a run that is not due
+    # there is nothing to validate, nothing to send, and no reason to fail.
+    current_hour = datetime.now(ZoneInfo(settings.timezone)).hour
+    if not is_due(current_hour, args.not_before_hour):
+        logger.info(
+            "Local time is %02d:xx (%s); publishing starts at %02d:00 — nothing to do.",
+            current_hour,
+            settings.timezone,
+            args.not_before_hour,
+        )
+        return 0
 
     if code := _require_secrets(settings):
         return code
