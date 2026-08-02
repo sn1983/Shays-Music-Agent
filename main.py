@@ -40,6 +40,7 @@ from music_agent.database.subscribers import SubscriberRepository  # noqa: E402
 from music_agent.facebook.client import FacebookClient, FacebookError  # noqa: E402
 from music_agent.logging_setup import configure_logging  # noqa: E402
 from music_agent.pipeline import DailySongPipeline, PipelineError, summarise  # noqa: E402
+from music_agent.reporting import write_subscriber_report  # noqa: E402
 from music_agent.scheduler.daily import run_scheduler  # noqa: E402
 from music_agent.scheduler.window import is_due  # noqa: E402
 from music_agent.telegram.client import TelegramClient, TelegramError  # noqa: E402
@@ -175,6 +176,8 @@ def _run_once(settings: Settings, args: argparse.Namespace) -> int:
         logger.error("Run failed: %s", exc)
         return 1
 
+    _refresh_subscriber_report(settings)
+
     if not results:
         print("כבר פורסם שיר היום — לא נשלח שוב.")
         return 0
@@ -258,6 +261,23 @@ def _test_facebook(settings: Settings, _: argparse.Namespace) -> int:
     return 0
 
 
+def _refresh_subscriber_report(settings: Settings) -> None:
+    """Keep storage/subscribers.md in step with the database.
+
+    SQLite is not viewable on GitHub, so this Markdown snapshot is what makes
+    the subscriber list readable from a browser or a phone.
+    """
+    subscribers = SubscriberRepository(settings.database_path)
+    subscribers.initialize()
+    path = write_subscriber_report(
+        settings.database_path.parent,
+        subscribers.all(),
+        generated_at=datetime.now(ZoneInfo(settings.timezone)),
+        owner_chat_id=settings.telegram_chat_id,
+    )
+    logger.info("Subscriber report written to %s.", path)
+
+
 def _subscription_service(settings: Settings) -> SubscriptionService:
     subscribers = SubscriberRepository(settings.database_path)
     subscribers.initialize()
@@ -294,6 +314,7 @@ def _sync_subscribers(settings: Settings, _: argparse.Namespace) -> int:
     except TelegramError as exc:
         print(f"סנכרון הנרשמים נכשל: {exc}", file=sys.stderr)
         return 1
+    _refresh_subscriber_report(settings)
     print(report.summary())
     for name in report.new_names:
         print(f"  נרשם חדש: {name}")
@@ -305,6 +326,7 @@ def _list_subscribers(settings: Settings, args: argparse.Namespace) -> int:
     subscribers.initialize()
     subscribers.ensure(settings.telegram_chat_id)
 
+    _refresh_subscriber_report(settings)
     people = subscribers.all() if args.all else subscribers.active()
     active, total = subscribers.counts()
     print(f"מנויים פעילים: {active} (מתוך {total} שנרשמו אי פעם)")

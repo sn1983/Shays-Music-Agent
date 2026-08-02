@@ -306,10 +306,20 @@ crontab -e
 
 ### לראות מי רשום
 
+**מהטלפון או מהדפדפן** — הקובץ `storage/subscribers.md` בריפו:
+<https://github.com/sn1983/Shays-Music-Agent/blob/main/storage/subscribers.md>
+הוא מתעדכן אוטומטית בכל הרצה (כל 15 דקות) ומציג את השמות, תאריכי ההצטרפות
+ומי הסיר את עצמו.
+
+**מהמחשב**, עם המזהים המלאים:
+
 ```bash
 python main.py subscribers          # רק הפעילים
 python main.py subscribers --all    # כולל מי שהסיר את עצמו
 ```
+
+> 🔒 המזהים בקובץ ה-Markdown מוצגים חלקית (`738***373`) בכוונה — הקובץ נמצא
+> בריפו, ומזהה מלא יחד עם שם פרטי מזהה אדם אמיתי.
 
 ---
 
