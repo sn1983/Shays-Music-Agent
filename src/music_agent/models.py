@@ -150,6 +150,10 @@ class PublishedSong(BaseModel):
     date_published: date
     telegram_message_id: Optional[int] = None
     facebook_post_id: Optional[str] = None
+    #: The full :class:`SongDossier` as JSON, so the post can be rebuilt later —
+    #: that is what lets a latecomer receive the song they missed today.
+    #: Null on rows written before this column existed.
+    dossier_json: Optional[str] = None
     views: int = 0
     likes: int = 0
     comments: int = 0

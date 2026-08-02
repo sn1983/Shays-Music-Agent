@@ -194,6 +194,9 @@ class DailySongPipeline:
                 date_published=today,
                 telegram_message_id=delivery.first_message_id,
                 facebook_post_id=facebook_post_id,
+                # Keep the raw research so the post can be rebuilt for someone
+                # who subscribes later today.
+                dossier_json=dossier.model_dump_json(),
             )
         )
         return PublishResult(

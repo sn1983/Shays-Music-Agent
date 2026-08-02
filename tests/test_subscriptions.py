@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
 import pytest
 
+from music_agent.database.repository import SongRepository
 from music_agent.database.subscribers import SubscriberRepository, SubscriptionChange
+from music_agent.models import PublishedSong, make_song_id
+from music_agent.telegram.catch_up import DailyCatchUp
 from music_agent.telegram.client import TelegramError
 from music_agent.telegram.subscriptions import SubscriptionService
 
@@ -22,8 +28,10 @@ class FakeTelegram:
     def __init__(self, updates: list[dict] | None = None) -> None:
         self.updates = list(updates or [])
         self.replies: list[tuple[str, str]] = []  # (chat_id, text)
+        self.posts: list[tuple[str, object]] = []  # (chat_id, TelegramPost)
         self.offsets: list[int | None] = []
         self.fail_for: set[str] = set()
+        self.fail_posts_for: set[str] = set()
 
     def get_updates(self, *, offset=None, timeout=0):
         self.offsets.append(offset)
@@ -34,6 +42,12 @@ class FakeTelegram:
         if chat_id in self.fail_for:
             raise TelegramError("Forbidden: bot was blocked by the user")
         self.replies.append((chat_id, text))
+        return None
+
+    def send_post(self, post, chat_id: str | None = None):
+        if chat_id in self.fail_for or chat_id in self.fail_posts_for:
+            raise TelegramError("Forbidden: bot was blocked by the user")
+        self.posts.append((chat_id, post))
         return None
 
 
@@ -51,9 +65,37 @@ def message(update_id: int, chat_id: int, text: str, **user) -> dict:
     }
 
 
-def service(telegram, subscribers) -> SubscriptionService:
+def service(telegram, subscribers, catch_up=None) -> SubscriptionService:
     return SubscriptionService(
-        telegram, subscribers, post_time="20:00", timezone="Asia/Jerusalem"
+        telegram,
+        subscribers,
+        post_time="20:00",
+        timezone="Asia/Jerusalem",
+        catch_up=catch_up,
+    )
+
+
+def songs_with_today(tmp_path, dossier, *, keep_dossier: bool = True) -> SongRepository:
+    """A repository holding one song published today."""
+    repository = SongRepository(tmp_path / "songs.db")
+    repository.initialize()
+    repository.add(
+        PublishedSong(
+            song_id=make_song_id(dossier.artist, dossier.title),
+            artist=dossier.artist,
+            title=dossier.title,
+            release_year=dossier.release_year,
+            decade="90s",
+            date_published=datetime.now(ZoneInfo("Asia/Jerusalem")).date(),
+            dossier_json=dossier.model_dump_json() if keep_dossier else None,
+        )
+    )
+    return repository
+
+
+def catch_up_for(telegram, repository) -> DailyCatchUp:
+    return DailyCatchUp(
+        telegram, repository, timezone="Asia/Jerusalem", intro="🎁 הנה השיר של היום:"
     )
 
 
@@ -228,3 +270,116 @@ def test_a_failed_reply_does_not_stop_the_rest(subscribers):
     assert report.failed == 1
     assert [chat for chat, _ in telegram.replies] == ["222"]
     assert subscribers.is_subscribed("222")
+
+
+# --------------------------------------------------------------------- #
+# Catching a latecomer up on the song they missed
+# --------------------------------------------------------------------- #
+
+
+def test_a_newcomer_receives_the_song_already_published_today(
+    subscribers, tmp_path, dossier
+):
+    telegram = FakeTelegram([message(1, 555, "/start")])
+    songs = songs_with_today(tmp_path, dossier)
+
+    report = service(telegram, subscribers, catch_up_for(telegram, songs)).sync()
+
+    assert report.caught_up == 1
+    # Welcome first, then the explanation, then the song itself.
+    assert [chat for chat, _ in telegram.replies] == ["555", "555"]
+    assert "נרשמת" in telegram.replies[0][1]
+    assert "השיר של היום" in telegram.replies[1][1]
+    chat_id, post = telegram.posts[0]
+    assert chat_id == "555"
+    assert "Torn" in post.text
+
+
+def test_a_returning_subscriber_is_caught_up_too(subscribers, tmp_path, dossier):
+    subscribers.subscribe("555")
+    subscribers.unsubscribe("555")
+    telegram = FakeTelegram([message(1, 555, "/start")])
+    songs = songs_with_today(tmp_path, dossier)
+
+    report = service(telegram, subscribers, catch_up_for(telegram, songs)).sync()
+
+    assert report.caught_up == 1
+    assert "שמחים שחזרתם" in telegram.replies[0][1]
+
+
+def test_pressing_start_again_does_not_resend_the_song(subscribers, tmp_path, dossier):
+    telegram = FakeTelegram([message(1, 555, "/start"), message(2, 555, "/start")])
+    songs = songs_with_today(tmp_path, dossier)
+
+    report = service(telegram, subscribers, catch_up_for(telegram, songs)).sync()
+
+    # Only the first /start earns the catch-up; the second is already subscribed.
+    assert report.caught_up == 1
+    assert len(telegram.posts) == 1
+
+
+def test_nothing_is_sent_when_today_has_no_song_yet(subscribers, tmp_path, dossier):
+    telegram = FakeTelegram([message(1, 555, "/start")])
+    songs = SongRepository(tmp_path / "songs.db")
+    songs.initialize()
+
+    report = service(telegram, subscribers, catch_up_for(telegram, songs)).sync()
+
+    assert report.caught_up == 0
+    assert telegram.posts == []
+    assert len(telegram.replies) == 1  # the welcome, and nothing else
+
+
+def test_yesterdays_song_is_not_resent(subscribers, tmp_path, dossier):
+    telegram = FakeTelegram([message(1, 555, "/start")])
+    songs = SongRepository(tmp_path / "songs.db")
+    songs.initialize()
+    songs.add(
+        PublishedSong(
+            song_id=make_song_id(dossier.artist, dossier.title),
+            artist=dossier.artist,
+            title=dossier.title,
+            release_year=dossier.release_year,
+            decade="90s",
+            date_published=(
+                datetime.now(ZoneInfo("Asia/Jerusalem")) - timedelta(days=1)
+            ).date(),
+            dossier_json=dossier.model_dump_json(),
+        )
+    )
+
+    report = service(telegram, subscribers, catch_up_for(telegram, songs)).sync()
+
+    assert report.caught_up == 0
+    assert telegram.posts == []
+
+
+def test_a_song_stored_without_a_dossier_is_skipped_quietly(
+    subscribers, tmp_path, dossier
+):
+    telegram = FakeTelegram([message(1, 555, "/start")])
+    songs = songs_with_today(tmp_path, dossier, keep_dossier=False)
+
+    report = service(telegram, subscribers, catch_up_for(telegram, songs)).sync()
+
+    # Rows written before the dossier was kept cannot be rebuilt — the
+    # subscription must still succeed.
+    assert report.caught_up == 0
+    assert telegram.posts == []
+    assert subscribers.is_subscribed("555")
+
+
+def test_a_failed_catch_up_does_not_cost_the_subscription(
+    subscribers, tmp_path, dossier
+):
+    telegram = FakeTelegram([message(1, 555, "/start")])
+    telegram.fail_posts_for = {"555"}
+    songs = songs_with_today(tmp_path, dossier)
+
+    report = service(telegram, subscribers, catch_up_for(telegram, songs)).sync()
+
+    # The bonus song is best-effort; the welcome and the subscription stand.
+    assert subscribers.is_subscribed("555")
+    assert report.caught_up == 0
+    assert report.failed == 0
+    assert "נרשמת" in telegram.replies[0][1]

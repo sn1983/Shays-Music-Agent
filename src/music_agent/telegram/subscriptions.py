@@ -19,6 +19,7 @@ from typing import Any, Optional
 
 from music_agent.database.subscribers import SubscriberRepository, SubscriptionChange
 from music_agent.telegram import messages as texts
+from music_agent.telegram.catch_up import DailyCatchUp
 from music_agent.telegram.client import TelegramClient, TelegramError
 
 logger = logging.getLogger(__name__)
@@ -34,12 +35,14 @@ class SyncReport:
     subscribed: int = 0
     unsubscribed: int = 0
     failed: int = 0
+    caught_up: int = 0
     new_names: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
         return (
             f"עודכנו {self.processed} הודעות | "
-            f"נרשמו: {self.subscribed} | הוסרו: {self.unsubscribed} | שגיאות: {self.failed}"
+            f"נרשמו: {self.subscribed} | הוסרו: {self.unsubscribed} | "
+            f"השלמות: {self.caught_up} | שגיאות: {self.failed}"
         )
 
 
@@ -53,11 +56,13 @@ class SubscriptionService:
         *,
         post_time: str,
         timezone: str,
+        catch_up: Optional[DailyCatchUp] = None,
     ) -> None:
         self._telegram = telegram
         self._subscribers = subscribers
         self._post_time = post_time
         self._timezone = timezone
+        self._catch_up = catch_up
 
     def sync(self) -> SyncReport:
         """Handle everything waiting in the queue, then return."""
@@ -139,6 +144,11 @@ class SubscriptionService:
             elif change is SubscriptionChange.RESUBSCRIBED:
                 report.subscribed += 1
             logger.info("Subscription %s for %s.", change.value, chat_id)
+            # Someone joining after the evening post would otherwise wait a full
+            # day for their first song. Pressing /start while already subscribed
+            # is deliberately excluded, so the song cannot be requested twice.
+            if self._catch_up is not None and change is not SubscriptionChange.ALREADY_SUBSCRIBED:
+                report.caught_up += self._catch_up.send_to(chat_id)
             return
 
         if command in {"/stop", "/unsubscribe"}:

@@ -26,11 +26,17 @@ CREATE TABLE IF NOT EXISTS published_songs (
     facebook_post_id    TEXT,
     views               INTEGER NOT NULL DEFAULT 0,
     likes               INTEGER NOT NULL DEFAULT 0,
-    comments            INTEGER NOT NULL DEFAULT 0
+    comments            INTEGER NOT NULL DEFAULT 0,
+    dossier_json        TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_published_songs_artist ON published_songs (artist);
 CREATE INDEX IF NOT EXISTS idx_published_songs_date   ON published_songs (date_published);
 """
+
+#: Columns added after the first release. SQLite has no `ADD COLUMN IF NOT
+#: EXISTS`, so each is applied only when missing — the live database is a file
+#: committed to the repository and cannot simply be recreated.
+_MIGRATIONS: tuple[tuple[str, str], ...] = (("dossier_json", "TEXT"),)
 
 
 class SongRepository:
@@ -53,6 +59,15 @@ class SongRepository:
     def initialize(self) -> None:
         with self._connect() as connection:
             connection.executescript(_SCHEMA)
+            existing = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(published_songs)").fetchall()
+            }
+            for column, declaration in _MIGRATIONS:
+                if column not in existing:
+                    connection.execute(
+                        f"ALTER TABLE published_songs ADD COLUMN {column} {declaration}"
+                    )
 
     def exists(self, song_id: str) -> bool:
         with self._connect() as connection:
@@ -91,8 +106,8 @@ class SongRepository:
                 INSERT INTO published_songs (
                     song_id, artist, title, album, release_year, decade, genre,
                     date_published, telegram_message_id, facebook_post_id,
-                    views, likes, comments
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    views, likes, comments, dossier_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     song.song_id,
@@ -108,6 +123,7 @@ class SongRepository:
                     song.views,
                     song.likes,
                     song.comments,
+                    song.dossier_json,
                 ),
             )
         return int(cursor.lastrowid)
@@ -162,4 +178,5 @@ def _to_model(row: sqlite3.Row) -> PublishedSong:
         views=row["views"],
         likes=row["likes"],
         comments=row["comments"],
+        dossier_json=row["dossier_json"] if "dossier_json" in row.keys() else None,
     )

@@ -43,6 +43,7 @@ from music_agent.pipeline import DailySongPipeline, PipelineError, summarise  # 
 from music_agent.reporting import write_subscriber_report  # noqa: E402
 from music_agent.scheduler.daily import run_scheduler  # noqa: E402
 from music_agent.scheduler.window import is_due  # noqa: E402
+from music_agent.telegram.catch_up import DailyCatchUp  # noqa: E402
 from music_agent.telegram.client import TelegramClient, TelegramError  # noqa: E402
 from music_agent.telegram import messages as bot_texts  # noqa: E402
 from music_agent.telegram.subscriptions import SubscriptionService  # noqa: E402
@@ -294,11 +295,20 @@ def _subscription_service(settings: Settings) -> SubscriptionService:
         settings.telegram_chat_id,
         parse_mode=settings.telegram_parse_mode,
     )
+    songs = SongRepository(settings.database_path)
+    songs.initialize()
     return SubscriptionService(
         telegram,
         subscribers,
         post_time=settings.post_time,
         timezone=settings.timezone,
+        catch_up=DailyCatchUp(
+            telegram,
+            songs,
+            timezone=settings.timezone,
+            parse_mode=settings.telegram_parse_mode,
+            intro=bot_texts.catch_up_intro(),
+        ),
     )
 
 

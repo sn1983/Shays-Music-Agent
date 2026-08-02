@@ -68,6 +68,14 @@ def welcome(post_time: str, timezone: str, *, first_name: str | None = None) -> 
     )
 
 
+def catch_up_intro() -> str:
+    """Introduces the song a latecomer missed, so it does not look like a bug."""
+    return (
+        "🎁 <b>ומתנה קטנה להתחלה</b> — השיר של היום כבר יצא לדרך לפני שהצטרפתם, "
+        "אז הנה הוא:"
+    )
+
+
 def already_subscribed(post_time: str, timezone: str) -> str:
     return (
         "✅ אתם כבר רשומים.\n\n"
