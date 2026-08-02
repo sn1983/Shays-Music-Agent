@@ -25,13 +25,16 @@ def bot_description(post_time: str, timezone: str) -> str:
 
     This is the only text a new visitor sees at the moment they arrive, so it
     carries the two facts that matter: what they will get, and that the
-    confirmation takes a few minutes to arrive. Telegram caps it at 512 chars.
+    confirmation is not instant. GitHub Actions delivers our "every 5 minutes"
+    schedule about once an hour in practice, so promise the hour we can keep
+    rather than the minutes we cannot. Telegram caps it at 512 chars.
     """
     return (
         "🎵 שיר אחד כל יום — פופ ורוק מהעשורים 90's, 2000's, 2010's ו-2020's.\n\n"
         f"בכל יום בשעה {_clock(post_time, timezone)} מגיע שיר עם תקציר בעברית, "
         "שלוש עובדות מעניינות וקישורים ל-Spotify, YouTube וויקיפדיה.\n\n"
-        "לחצו START כדי להירשם. הודעת האישור מגיעה תוך כמה דקות."
+        "לחצו START כדי להירשם. הודעת האישור מגיעה תוך כשעה — ההרשמה נשמרת "
+        "אצל טלגרם עד שהבוט מתעורר, אז כלום לא הולך לאיבוד."
     )
 
 

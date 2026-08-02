@@ -88,7 +88,7 @@ def test_the_pre_start_description_states_the_time_and_the_wait():
     assert "20:00" in description
     assert "START" in description
     # A newcomer must know the confirmation is not instant.
-    assert "כמה דקות" in description
+    assert "כשעה" in description
 
 
 def test_setup_publishes_commands_and_descriptions():

@@ -19,9 +19,12 @@ on:
   workflow_dispatch:
     inputs:
       ignore_local_hour:
+        # Off by default on purpose: a manual run used to publish immediately,
+        # and --once-per-day then silenced that evening's scheduled post. A
+        # midday test would quietly cost subscribers their 20:00 song.
         description: "Publish now, without waiting for 20:00 local time"
         type: boolean
-        default: true
+        default: false
 
 # Runs queue instead of overlapping: both the subscriber sync and the daily
 # post write to the same SQLite file and commit it back.
