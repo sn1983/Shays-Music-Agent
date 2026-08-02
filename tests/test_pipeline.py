@@ -7,12 +7,13 @@ from conftest import published
 
 from music_agent.config import Settings
 from music_agent.database.repository import SongRepository
+from music_agent.database.subscribers import SubscriberRepository
 from music_agent.facebook.client import FacebookError, PublishedPost
 from music_agent.models import SongDossier, SongSelection
 from music_agent.music.formatter import TelegramPost
 from music_agent.music.selector import build_plan
 from music_agent.pipeline import DailySongPipeline, PipelineError
-from music_agent.telegram.client import SentMessage
+from music_agent.telegram.client import SentMessage, TelegramError
 
 
 class FakeAgent:
@@ -32,12 +33,20 @@ class FakeAgent:
 
 
 class FakeTelegram:
-    def __init__(self) -> None:
-        self.sent: list[TelegramPost] = []
+    """Records every delivery, and can be told to fail for specific chats."""
 
-    def send_post(self, post: TelegramPost) -> SentMessage:
+    def __init__(self, errors: dict[str, Exception] | None = None) -> None:
+        self.sent: list[TelegramPost] = []
+        self.recipients: list[str] = []
+        self._errors = errors or {}
+
+    def send_post(self, post: TelegramPost, chat_id: str | None = None) -> SentMessage:
+        target = chat_id or "123"
+        if target in self._errors:
+            raise self._errors[target]
         self.sent.append(post)
-        return SentMessage(message_id=4242, chat_id="123")
+        self.recipients.append(target)
+        return SentMessage(message_id=4242, chat_id=target)
 
 
 def make_settings(tmp_path, **overrides) -> Settings:
@@ -275,3 +284,103 @@ def test_facebook_is_skipped_when_disabled(pipeline_parts):
 
     assert results[0].facebook_post_id is None
     assert repository.recent()[0].facebook_post_id is None
+
+
+# --------------------------------------------------------------------- #
+# Broadcasting to the subscriber list
+# --------------------------------------------------------------------- #
+
+
+def subscriber_repo(settings) -> SubscriberRepository:
+    repository = SubscriberRepository(settings.database_path)
+    repository.initialize()
+    return repository
+
+
+def test_the_song_reaches_every_subscriber(pipeline_parts):
+    settings, repository, telegram, dossier = pipeline_parts
+    subscribers = subscriber_repo(settings)
+    for chat_id in ("111", "222", "333"):
+        subscribers.subscribe(chat_id)
+    _, year = target_of(repository)
+    agent = FakeAgent([selection("Natalie Imbruglia", "Torn", year)], dossier)
+
+    results = DailySongPipeline(
+        settings, repository=repository, subscribers=subscribers,
+        agent=agent, telegram=telegram,
+    ).run()
+
+    # Three subscribers plus the owner chat carried over from TELEGRAM_CHAT_ID.
+    assert sorted(telegram.recipients) == ["111", "123", "222", "333"]
+    assert results[0].recipients == 4
+
+
+def test_a_subscriber_who_blocked_the_bot_is_removed(pipeline_parts):
+    settings, repository, telegram, dossier = pipeline_parts
+    subscribers = subscriber_repo(settings)
+    subscribers.subscribe("111")
+    subscribers.subscribe("222")
+    telegram._errors = {"111": TelegramError("Forbidden: bot was blocked by the user")}
+    _, year = target_of(repository)
+    agent = FakeAgent([selection("Natalie Imbruglia", "Torn", year)], dossier)
+
+    results = DailySongPipeline(
+        settings, repository=repository, subscribers=subscribers,
+        agent=agent, telegram=telegram,
+    ).run()
+
+    assert not subscribers.is_subscribed("111")   # never retried again
+    assert subscribers.is_subscribed("222")       # unaffected
+    assert results[0].recipients == 2             # 222 and the owner
+    assert repository.total() == 1                # the song still counts as published
+
+
+def test_a_temporary_failure_keeps_the_subscriber(pipeline_parts):
+    settings, repository, telegram, dossier = pipeline_parts
+    subscribers = subscriber_repo(settings)
+    subscribers.subscribe("111")
+    telegram._errors = {"111": TelegramError("Bad Gateway")}
+    _, year = target_of(repository)
+    agent = FakeAgent([selection("Natalie Imbruglia", "Torn", year)], dossier)
+
+    DailySongPipeline(
+        settings, repository=repository, subscribers=subscribers,
+        agent=agent, telegram=telegram,
+    ).run()
+
+    assert subscribers.is_subscribed("111")
+
+
+def test_nothing_is_researched_when_nobody_is_subscribed(pipeline_parts):
+    settings, repository, telegram, dossier = pipeline_parts
+    subscribers = subscriber_repo(settings)
+    subscribers.ensure(settings.telegram_chat_id)
+    subscribers.unsubscribe(settings.telegram_chat_id)
+    agent = FakeAgent([], dossier)  # popping from it would raise
+
+    results = DailySongPipeline(
+        settings, repository=repository, subscribers=subscribers,
+        agent=agent, telegram=telegram,
+    ).run()
+
+    assert results == []
+    assert agent.plans == []      # Claude was never called, so nothing was paid for
+    assert telegram.sent == []
+
+
+def test_a_song_nobody_received_is_not_recorded_as_published(pipeline_parts):
+    settings, repository, telegram, dossier = pipeline_parts
+    subscribers = subscriber_repo(settings)
+    subscribers.ensure(settings.telegram_chat_id)
+    telegram._errors = {"123": TelegramError("Bad Gateway")}
+    _, year = target_of(repository)
+    agent = FakeAgent([selection("Natalie Imbruglia", "Torn", year)], dossier)
+
+    with pytest.raises(PipelineError, match="could not be delivered"):
+        DailySongPipeline(
+            settings, repository=repository, subscribers=subscribers,
+            agent=agent, telegram=telegram,
+        ).run()
+
+    # The song stays available for tomorrow rather than being silently burned.
+    assert repository.total() == 0

@@ -76,11 +76,27 @@ class TelegramClient:
         self._parse_mode = parse_mode
         self._client = client or httpx.Client(timeout=timeout)
 
+    @property
+    def default_chat_id(self) -> str:
+        return self._chat_id
+
     def get_me(self) -> dict[str, Any]:
         """Verify the bot token; used by the `test-telegram` command."""
         return self._request("getMe", {})
 
-    def send_post(self, post: TelegramPost) -> SentMessage:
+    def get_updates(self, *, offset: Optional[int] = None, timeout: int = 0) -> list[dict[str, Any]]:
+        """Fetch incoming messages.
+
+        `offset` acknowledges everything before it, so each message is handled
+        exactly once even across separate processes. `timeout` > 0 turns this
+        into a long poll, which is how the always-on bot waits for messages.
+        """
+        payload: dict[str, Any] = {"timeout": timeout, "allowed_updates": ["message"]}
+        if offset is not None:
+            payload["offset"] = offset
+        return list(self._request("getUpdates", payload, read_timeout=timeout + 15))
+
+    def send_post(self, post: TelegramPost, chat_id: Optional[str] = None) -> SentMessage:
         """Deliver a post, falling back to text if the photo cannot be sent."""
         keyboard = _keyboard(post.buttons)
 
@@ -89,6 +105,7 @@ class TelegramClient:
                 result = self._request(
                     "sendPhoto",
                     self._payload(
+                        chat_id,
                         photo=post.photo_url,
                         caption=post.text,
                         reply_markup=keyboard,
@@ -101,6 +118,7 @@ class TelegramClient:
         result = self._request(
             "sendMessage",
             self._payload(
+                chat_id,
                 text=post.text,
                 reply_markup=keyboard,
                 link_preview_options={"is_disabled": not post.photo_url},
@@ -108,21 +126,30 @@ class TelegramClient:
         )
         return _to_sent_message(result)
 
-    def send_text(self, text: str) -> SentMessage:
-        """Send a plain notification (errors, health checks)."""
-        return _to_sent_message(self._request("sendMessage", self._payload(text=text)))
+    def send_text(self, text: str, chat_id: Optional[str] = None) -> SentMessage:
+        """Send a plain message (replies, notifications, health checks)."""
+        return _to_sent_message(
+            self._request("sendMessage", self._payload(chat_id, text=text))
+        )
 
     # ------------------------------------------------------------------ #
 
-    def _payload(self, **fields: Any) -> dict[str, Any]:
-        payload: dict[str, Any] = {"chat_id": self._chat_id, "parse_mode": self._parse_mode}
+    def _payload(self, chat_id: Optional[str], **fields: Any) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "chat_id": chat_id or self._chat_id,
+            "parse_mode": self._parse_mode,
+        }
         payload.update({key: value for key, value in fields.items() if value is not None})
         return payload
 
-    def _request(self, method: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def _request(
+        self, method: str, payload: dict[str, Any], *, read_timeout: Optional[float] = None
+    ) -> Any:
         url = f"{API_ROOT}/bot{self._token}/{method}"
+        options = {} if read_timeout is None else {"timeout": read_timeout}
         try:
-            response = self._client.post(url, json=payload)
+            # Long polling holds the connection open past the default timeout.
+            response = self._client.post(url, json=payload, **options)
         except httpx.HTTPError as exc:
             raise TelegramError(f"{method} failed: {exc}") from exc
 

@@ -7,6 +7,9 @@
     python main.py run-once --dry-run
     python main.py schedule          # להישאר פעיל ולשלוח כל יום ב-POST_TIME
     python main.py history           # מה כבר פורסם
+    python main.py bot               # מאזין לנרשמים חדשים בזמן אמת
+    python main.py sync-subscribers  # קולט נרשמים חדשים פעם אחת ויוצא
+    python main.py subscribers       # מי רשום כרגע
 """
 
 from __future__ import annotations
@@ -33,12 +36,14 @@ from music_agent.config import (  # noqa: E402
     missing_publishing_secrets,
 )
 from music_agent.database.repository import SongRepository  # noqa: E402
+from music_agent.database.subscribers import SubscriberRepository  # noqa: E402
 from music_agent.facebook.client import FacebookClient, FacebookError  # noqa: E402
 from music_agent.logging_setup import configure_logging  # noqa: E402
 from music_agent.pipeline import DailySongPipeline, PipelineError, summarise  # noqa: E402
 from music_agent.scheduler.daily import run_scheduler  # noqa: E402
 from music_agent.scheduler.window import is_due  # noqa: E402
 from music_agent.telegram.client import TelegramClient, TelegramError  # noqa: E402
+from music_agent.telegram.subscriptions import SubscriptionService  # noqa: E402
 
 logger = logging.getLogger("music_agent.cli")
 
@@ -76,6 +81,19 @@ def build_parser() -> argparse.ArgumentParser:
     commands.add_parser(
         "test-facebook", help="Verify the Facebook page id and access token."
     )
+    commands.add_parser(
+        "bot", help="Listen for /start and /stop continuously (instant welcome messages)."
+    )
+    commands.add_parser(
+        "sync-subscribers",
+        help="Process pending /start and /stop messages once, then exit (for cron).",
+    )
+
+    subscribers = commands.add_parser("subscribers", help="List the subscriber list.")
+    subscribers.add_argument(
+        "--all", action="store_true", help="Include people who unsubscribed."
+    )
+
     commands.add_parser("init-db", help="Create the SQLite database and tables.")
     commands.add_parser("stats", help="Show how many songs were published per decade.")
 
@@ -106,6 +124,9 @@ def main(argv: list[str] | None = None) -> int:
         "schedule": _schedule,
         "test-telegram": _test_telegram,
         "test-facebook": _test_facebook,
+        "bot": _bot,
+        "sync-subscribers": _sync_subscribers,
+        "subscribers": _list_subscribers,
         "init-db": _init_db,
         "stats": _stats,
         "history": _history,
@@ -237,8 +258,68 @@ def _test_facebook(settings: Settings, _: argparse.Namespace) -> int:
     return 0
 
 
+def _subscription_service(settings: Settings) -> SubscriptionService:
+    subscribers = SubscriberRepository(settings.database_path)
+    subscribers.initialize()
+    # Whoever was configured before subscriptions existed stays on the list.
+    subscribers.ensure(settings.telegram_chat_id)
+    telegram = TelegramClient(
+        settings.telegram_bot_token,
+        settings.telegram_chat_id,
+        parse_mode=settings.telegram_parse_mode,
+    )
+    return SubscriptionService(
+        telegram,
+        subscribers,
+        post_time=settings.post_time,
+        timezone=settings.timezone,
+    )
+
+
+def _bot(settings: Settings, _: argparse.Namespace) -> int:
+    if code := _require_secrets(settings):
+        return code
+    try:
+        _subscription_service(settings).run_forever()
+    except KeyboardInterrupt:
+        print("\nהבוט נעצר.")
+    return 0
+
+
+def _sync_subscribers(settings: Settings, _: argparse.Namespace) -> int:
+    if code := _require_secrets(settings):
+        return code
+    try:
+        report = _subscription_service(settings).sync()
+    except TelegramError as exc:
+        print(f"סנכרון הנרשמים נכשל: {exc}", file=sys.stderr)
+        return 1
+    print(report.summary())
+    for name in report.new_names:
+        print(f"  נרשם חדש: {name}")
+    return 0
+
+
+def _list_subscribers(settings: Settings, args: argparse.Namespace) -> int:
+    subscribers = SubscriberRepository(settings.database_path)
+    subscribers.initialize()
+    subscribers.ensure(settings.telegram_chat_id)
+
+    people = subscribers.all() if args.all else subscribers.active()
+    active, total = subscribers.counts()
+    print(f"מנויים פעילים: {active} (מתוך {total} שנרשמו אי פעם)")
+    if not people:
+        print("אף אחד לא רשום עדיין. שלחו /start לבוט כדי להירשם.")
+        return 0
+    for person in people:
+        state = "פעיל" if person.is_subscribed else "הוסר"
+        print(f"  {person.chat_id:>14}  {person.display_name:<20} {state}")
+    return 0
+
+
 def _init_db(settings: Settings, _: argparse.Namespace) -> int:
     SongRepository(settings.database_path).initialize()
+    SubscriberRepository(settings.database_path).initialize()
     print(f"מסד הנתונים מוכן: {settings.database_path}")
     return 0
 

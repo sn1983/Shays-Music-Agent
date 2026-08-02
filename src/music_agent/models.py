@@ -119,6 +119,24 @@ class SongDossier(BaseModel):
     facts: list[SongFact] = Field(description="Three verified interesting facts, in Hebrew.")
 
 
+class Subscriber(BaseModel):
+    """Someone who receives the daily song."""
+
+    chat_id: str
+    first_name: Optional[str] = None
+    username: Optional[str] = None
+    is_subscribed: bool = True
+    joined_at: Optional[str] = None
+    unsubscribed_at: Optional[str] = None
+    last_error: Optional[str] = None
+
+    @property
+    def display_name(self) -> str:
+        if self.username:
+            return f"@{self.username}"
+        return self.first_name or self.chat_id
+
+
 class PublishedSong(BaseModel):
     """A row of the duplicate-protection / analytics database."""
 

@@ -11,11 +11,12 @@ from zoneinfo import ZoneInfo
 from music_agent.ai.claude_client import AgentError, ClaudeMusicAgent
 from music_agent.config import Settings
 from music_agent.database.repository import SongRepository
+from music_agent.database.subscribers import SubscriberRepository
 from music_agent.facebook.client import FacebookClient, FacebookError
 from music_agent.models import PublishedSong, SongDossier, SongSelection, decade_of
 from music_agent.music.formatter import FacebookPostFormatter, PostFormatter, TelegramPost
 from music_agent.music.selector import build_plan, is_genre_allowed
-from music_agent.telegram.client import TelegramClient
+from music_agent.telegram.client import TelegramClient, TelegramError
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,30 @@ class PipelineError(RuntimeError):
     """Raised when the daily run cannot complete."""
 
 
+@dataclass
+class Delivery:
+    """The outcome of sending one post to the whole subscriber list."""
+
+    recipients: int = 0
+    failures: int = 0
+    first_message_id: Optional[int] = None
+
+
+#: Telegram errors that will never succeed on a retry, so the subscriber is removed.
+_PERMANENT_MARKERS = (
+    "bot was blocked by the user",
+    "chat not found",
+    "user is deactivated",
+    "bot was kicked",
+    "the group chat was deleted",
+)
+
+
+def _is_permanent(error: TelegramError) -> bool:
+    lowered = str(error).lower()
+    return any(marker in lowered for marker in _PERMANENT_MARKERS)
+
+
 @dataclass(frozen=True)
 class PublishResult:
     """What a single run produced."""
@@ -34,6 +59,7 @@ class PublishResult:
     dossier: SongDossier
     post: TelegramPost
     telegram_message_id: Optional[int]
+    recipients: int = 0
     facebook_post_id: Optional[str] = None
     skipped_reason: Optional[str] = None
 
@@ -50,12 +76,14 @@ class DailySongPipeline:
         settings: Settings,
         *,
         repository: Optional[SongRepository] = None,
+        subscribers: Optional[SubscriberRepository] = None,
         agent: Optional[ClaudeMusicAgent] = None,
         telegram: Optional[TelegramClient] = None,
         facebook: Optional[FacebookClient] = None,
     ) -> None:
         self._settings = settings
         self._repository = repository or SongRepository(settings.database_path)
+        self._subscribers = subscribers or SubscriberRepository(settings.database_path)
         self._agent = agent or ClaudeMusicAgent(
             settings.claude_api_key,
             model=settings.claude_model,
@@ -85,16 +113,30 @@ class DailySongPipeline:
     def repository(self) -> SongRepository:
         return self._repository
 
+    @property
+    def subscribers(self) -> SubscriberRepository:
+        return self._subscribers
+
     def now(self) -> datetime:
         return datetime.now(ZoneInfo(self._settings.timezone))
 
     def run(self, *, once_per_day: bool = False) -> list[PublishResult]:
         """Publish today's songs. Returns one result per song."""
         self._repository.initialize()
+        self._subscribers.initialize()
+        # The chat configured at setup time keeps its subscription without
+        # having to send /start again.
+        self._subscribers.ensure(self._settings.telegram_chat_id)
         today = self.now().date()
 
         if once_per_day and self._repository.published_on(today):
             logger.info("A song was already published on %s; nothing to do.", today)
+            return []
+
+        if not (self._settings.dry_run or self._subscribers.active()):
+            # Choosing and researching a song costs real money; there is no
+            # point paying for it when nobody is listening.
+            logger.warning("Nobody is subscribed; skipping today's run.")
             return []
 
         results: list[PublishResult] = []
@@ -132,8 +174,11 @@ class DailySongPipeline:
                 skipped_reason="dry-run",
             )
 
-        sent = self._telegram.send_post(post)
-        logger.info("Sent to Telegram as message %s.", sent.message_id)
+        delivery = self._broadcast(post)
+        if delivery.recipients == 0:
+            raise PipelineError(
+                "The post could not be delivered to any subscriber; not recording it as published."
+            )
 
         facebook_post_id = self._publish_to_facebook(dossier)
 
@@ -147,7 +192,7 @@ class DailySongPipeline:
                 decade=decade_of(dossier.release_year or selection.release_year),
                 genre=dossier.genre or selection.genre,
                 date_published=today,
-                telegram_message_id=sent.message_id,
+                telegram_message_id=delivery.first_message_id,
                 facebook_post_id=facebook_post_id,
             )
         )
@@ -155,9 +200,40 @@ class DailySongPipeline:
             selection=selection,
             dossier=dossier,
             post=post,
-            telegram_message_id=sent.message_id,
+            telegram_message_id=delivery.first_message_id,
+            recipients=delivery.recipients,
             facebook_post_id=facebook_post_id,
         )
+
+    def _broadcast(self, post: TelegramPost) -> "Delivery":
+        """Send the post to every active subscriber.
+
+        One unreachable subscriber must not stop the rest, so failures are
+        collected. A chat that blocked the bot or no longer exists is removed
+        from the list — it can never succeed again, and retrying it daily would
+        only slow every future run.
+        """
+        delivery = Delivery()
+        for subscriber in self._subscribers.active():
+            try:
+                sent = self._telegram.send_post(post, subscriber.chat_id)
+            except TelegramError as exc:
+                delivery.failures += 1
+                if _is_permanent(exc):
+                    self._subscribers.unsubscribe(subscriber.chat_id, reason=str(exc))
+                    logger.info("Removed %s from the list: %s", subscriber.chat_id, exc)
+                else:
+                    logger.warning("Could not deliver to %s: %s", subscriber.chat_id, exc)
+                continue
+
+            delivery.recipients += 1
+            if delivery.first_message_id is None:
+                delivery.first_message_id = sent.message_id
+
+        logger.info(
+            "Delivered to %d subscriber(s), %d failed.", delivery.recipients, delivery.failures
+        )
+        return delivery
 
     def _publish_to_facebook(self, dossier: SongDossier) -> Optional[str]:
         """Mirror the post to Facebook.
@@ -218,7 +294,9 @@ def summarise(result: PublishResult) -> str:
     """One-line human summary of a run, for logs and the CLI."""
     status = "פורסם" if result.published else f"לא פורסם ({result.skipped_reason})"
     channels = []
-    if result.telegram_message_id:
+    if result.recipients:
+        channels.append(f"Telegram ({result.recipients} מנויים)")
+    elif result.telegram_message_id:
         channels.append("Telegram")
     if result.facebook_post_id:
         channels.append("Facebook")
