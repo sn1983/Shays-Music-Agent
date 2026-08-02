@@ -1,0 +1,33 @@
+name: Setup Bot Profile
+
+# The bot's command menu and its pre-Start description change rarely, so this
+# is run by hand rather than on a schedule. One click in the Actions tab means
+# no local checkout is needed to publish them.
+on:
+  workflow_dispatch:
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
+      TIMEZONE: Asia/Jerusalem
+      LOG_LEVEL: INFO
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Publish the command menu and description
+        run: python main.py setup-bot
