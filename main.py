@@ -44,6 +44,7 @@ from music_agent.reporting import write_subscriber_report  # noqa: E402
 from music_agent.scheduler.daily import run_scheduler  # noqa: E402
 from music_agent.scheduler.window import is_due  # noqa: E402
 from music_agent.telegram.client import TelegramClient, TelegramError  # noqa: E402
+from music_agent.telegram import messages as bot_texts  # noqa: E402
 from music_agent.telegram.subscriptions import SubscriptionService  # noqa: E402
 
 logger = logging.getLogger("music_agent.cli")
@@ -81,6 +82,10 @@ def build_parser() -> argparse.ArgumentParser:
     commands.add_parser("test-telegram", help="Verify the bot token and chat id.")
     commands.add_parser(
         "test-facebook", help="Verify the Facebook page id and access token."
+    )
+    commands.add_parser(
+        "setup-bot",
+        help="Publish the bot's command menu and description so newcomers see them at once.",
     )
     commands.add_parser(
         "bot", help="Listen for /start and /stop continuously (instant welcome messages)."
@@ -125,6 +130,7 @@ def main(argv: list[str] | None = None) -> int:
         "schedule": _schedule,
         "test-telegram": _test_telegram,
         "test-facebook": _test_facebook,
+        "setup-bot": _setup_bot,
         "bot": _bot,
         "sync-subscribers": _sync_subscribers,
         "subscribers": _list_subscribers,
@@ -294,6 +300,33 @@ def _subscription_service(settings: Settings) -> SubscriptionService:
         post_time=settings.post_time,
         timezone=settings.timezone,
     )
+
+
+def _setup_bot(settings: Settings, _: argparse.Namespace) -> int:
+    """Push the profile texts a visitor sees before anyone replies to them."""
+    if code := _require_secrets(settings):
+        return code
+
+    client = TelegramClient(
+        settings.telegram_bot_token,
+        settings.telegram_chat_id,
+        parse_mode=settings.telegram_parse_mode,
+    )
+    try:
+        client.set_my_commands(bot_texts.BOT_COMMANDS)
+        client.set_my_short_description(bot_texts.BOT_SHORT_DESCRIPTION)
+        client.set_my_description(
+            bot_texts.bot_description(settings.post_time, settings.timezone)
+        )
+    except TelegramError as exc:
+        print(f"עדכון פרופיל הבוט נכשל: {exc}", file=sys.stderr)
+        return 1
+
+    print("פרופיל הבוט עודכן:")
+    print("  • תפריט הפקודות: " + ", ".join(f"/{name}" for name, _ in bot_texts.BOT_COMMANDS))
+    print("  • תיאור שנראה לפני שלוחצים Start")
+    print("  • תיאור קצר בפרופיל")
+    return 0
 
 
 def _bot(settings: Settings, _: argparse.Namespace) -> int:

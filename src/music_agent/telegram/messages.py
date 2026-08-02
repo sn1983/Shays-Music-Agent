@@ -16,6 +16,34 @@ def _clock(post_time: str, timezone: str) -> str:
     return f"{post_time} ({label})"
 
 
+#: Shown on the bot's profile, under its name. Telegram caps this at 120 chars.
+BOT_SHORT_DESCRIPTION = "שיר פופ/רוק אחד כל יום, עם הסיפור שמאחוריו וקישורים להאזנה 🎵"
+
+
+def bot_description(post_time: str, timezone: str) -> str:
+    """Shown on the empty chat screen, *before* the user presses Start.
+
+    This is the only text a new visitor sees at the moment they arrive, so it
+    carries the two facts that matter: what they will get, and that the
+    confirmation takes a few minutes to arrive. Telegram caps it at 512 chars.
+    """
+    return (
+        "🎵 שיר אחד כל יום — פופ ורוק מהעשורים 90's, 2000's, 2010's ו-2020's.\n\n"
+        f"בכל יום בשעה {_clock(post_time, timezone)} מגיע שיר עם תקציר בעברית, "
+        "שלוש עובדות מעניינות וקישורים ל-Spotify, YouTube וויקיפדיה.\n\n"
+        "לחצו START כדי להירשם. הודעת האישור מגיעה תוך כמה דקות."
+    )
+
+
+#: The menu Telegram shows behind the "/" button in the chat.
+BOT_COMMANDS: tuple[tuple[str, str], ...] = (
+    ("start", "הרשמה לשיר היומי"),
+    ("stop", "הפסקת העדכונים"),
+    ("status", "מצב המנוי ושעת השליחה"),
+    ("help", "מה הבוט עושה"),
+)
+
+
 def welcome(post_time: str, timezone: str, *, first_name: str | None = None) -> str:
     """Sent the moment someone subscribes."""
     greeting = f"היי {first_name}! " if first_name else "היי! "

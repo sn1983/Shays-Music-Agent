@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 import httpx
 
@@ -83,6 +83,21 @@ class TelegramClient:
     def get_me(self) -> dict[str, Any]:
         """Verify the bot token; used by the `test-telegram` command."""
         return self._request("getMe", {})
+
+    def set_my_commands(self, commands: "Sequence[tuple[str, str]]") -> None:
+        """Register the menu behind the "/" button."""
+        self._request(
+            "setMyCommands",
+            {"commands": [{"command": name, "description": text} for name, text in commands]},
+        )
+
+    def set_my_description(self, description: str) -> None:
+        """Text shown on the empty chat screen, before the user presses Start."""
+        self._request("setMyDescription", {"description": description})
+
+    def set_my_short_description(self, description: str) -> None:
+        """Text shown on the bot's profile page."""
+        self._request("setMyShortDescription", {"short_description": description})
 
     def get_updates(self, *, offset: Optional[int] = None, timeout: int = 0) -> list[dict[str, Any]]:
         """Fetch incoming messages.

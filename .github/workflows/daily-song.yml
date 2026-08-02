@@ -2,9 +2,10 @@ name: Daily Song
 
 on:
   schedule:
-    # Collect /start and /stop messages often, so a new subscriber gets their
-    # welcome within ~15 minutes rather than waiting for the evening run.
-    - cron: "*/15 * * * *"
+    # Collect /start and /stop messages as often as GitHub allows, so a new
+    # subscriber is greeted in minutes rather than waiting for the evening run.
+    # Five minutes is the platform minimum; triggers are still best-effort.
+    - cron: "*/5 * * * *"
     # GitHub cron is UTC and best-effort: a trigger routinely fires 20-70
     # minutes late, and the top of the hour is the most congested slot. So we
     # ask several times at :07, and the job publishes on the first one that
@@ -67,7 +68,7 @@ jobs:
       - name: Publish the daily song
         # The frequent trigger only collects subscribers; publishing belongs to
         # the evening slots and to manual runs.
-        if: github.event.schedule != '*/15 * * * *'
+        if: github.event.schedule != '*/5 * * * *'
         timeout-minutes: 25
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] \
