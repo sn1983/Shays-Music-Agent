@@ -2,19 +2,22 @@ name: Daily Song
 
 on:
   schedule:
-    # Wake up regularly to collect /start and /stop messages, and to publish
-    # once the evening comes round. Asking for */5 did not produce runs every
-    # five minutes — GitHub delivered roughly one per hour, then one per two to
-    # three hours, and started dropping the dedicated evening triggers below.
-    # Half-hourly is an honest request that leaves the scheduler room to
-    # deliver the ones that matter.
-    - cron: "*/30 * * * *"
-    # GitHub cron is UTC and best-effort: a trigger routinely fires 20-70
-    # minutes late, and the top of the hour is the most congested slot. So we
-    # ask several times at :07, and the job publishes on the first one that
-    # lands at or after 20:00 local; --once-per-day makes the rest no-ops.
-    # This also absorbs Israel's twice-yearly clock change: in winter the
-    # 17:07 UTC slot is 19:07 local and skips, and 18:07 UTC publishes.
+    # Wake up to collect /start and /stop messages, and to publish once the
+    # evening comes round.
+    #
+    # Scheduled runs are second-class citizens on GitHub. Measured on this
+    # repository: a manual run is given a runner within seconds, while a
+    # scheduled run can sit for fifteen minutes with no runner assigned and is
+    # then cancelled outright. Asking more often does not help — it produced
+    # fewer usable runs, not more. So the request is modest and off the top of
+    # the hour, which is the most congested minute of all.
+    - cron: "23 * * * *"
+    # Extra chances in the evening, at a different minute, so a starved hourly
+    # trigger is not the only thing standing between subscribers and the song.
+    # The job publishes on the first run that lands at or after 20:00 local;
+    # --once-per-day makes the rest no-ops. This also absorbs Israel's
+    # twice-yearly clock change: in winter the 17:07 UTC slot is 19:07 local
+    # and skips, and 18:07 UTC publishes.
     - cron: "7 17 * * *"
     - cron: "7 18 * * *"
     - cron: "7 19 * * *"
@@ -72,6 +75,7 @@ jobs:
         run: python main.py sync-subscribers
 
       - name: Publish the daily song
+        id: publish
         # Every run gets to try, whatever woke it. Restricting this to the four
         # evening triggers meant that when GitHub dropped them — as it did on
         # 3 Aug 2026 — no song went out at all, even though a run had landed at
@@ -105,11 +109,15 @@ jobs:
           fi
 
       - name: Report the failure to Telegram
-        if: failure()
+        # Only when publishing itself failed. A broken pip mirror, a git push
+        # race or a runner that vanished are all worth a look in the Actions
+        # tab, but none of them are worth a message on someone's phone — and
+        # the next run half an hour later usually fixes them by itself.
+        if: failure() && steps.publish.conclusion == 'failure'
         continue-on-error: true
         run: |
           curl -sS --max-time 30 \
             "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
-            --data-urlencode "text=⚠️ ההרצה היומית נכשלה. הלוג: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --data-urlencode "text=⚠️ פרסום השיר היומי נכשל. הלוג: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             > /dev/null
