@@ -22,6 +22,9 @@ logger = logging.getLogger(__name__)
 
 MAX_SELECTION_ATTEMPTS = 4
 
+#: Research that comes back without content is retried before the day is lost.
+MAX_RESEARCH_ATTEMPTS = 3
+
 
 class PipelineError(RuntimeError):
     """Raised when the daily run cannot complete."""
@@ -158,7 +161,7 @@ class DailySongPipeline:
             selection.genre,
         )
 
-        dossier = self._agent.research_song(selection)
+        dossier = self._research(selection)
         post = self._formatter.format(dossier)
 
         if self._settings.dry_run:
@@ -207,6 +210,29 @@ class DailySongPipeline:
             recipients=delivery.recipients,
             facebook_post_id=facebook_post_id,
         )
+
+    def _research(self, selection: SongSelection) -> SongDossier:
+        """Research the song, retrying a run that came back without content.
+
+        Hollow research is not a permanent condition — it is a turn where the
+        searches went nowhere — so asking again is usually enough. What must not
+        happen is publishing the empty result, so after the last attempt the
+        error propagates and the song stays unpublished and unrecorded, free to
+        be chosen again tomorrow.
+        """
+        for attempt in range(1, MAX_RESEARCH_ATTEMPTS + 1):
+            try:
+                return self._agent.research_song(selection)
+            except AgentError as exc:
+                if attempt == MAX_RESEARCH_ATTEMPTS:
+                    raise
+                logger.warning(
+                    "Research attempt %d/%d failed (%s); trying again.",
+                    attempt,
+                    MAX_RESEARCH_ATTEMPTS,
+                    exc,
+                )
+        raise AssertionError("unreachable")  # pragma: no cover
 
     def _broadcast(self, post: TelegramPost) -> "Delivery":
         """Send the post to every active subscriber.

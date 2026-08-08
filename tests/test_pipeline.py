@@ -12,7 +12,12 @@ from music_agent.facebook.client import FacebookError, PublishedPost
 from music_agent.models import SongDossier, SongSelection
 from music_agent.music.formatter import TelegramPost
 from music_agent.music.selector import build_plan
-from music_agent.pipeline import DailySongPipeline, PipelineError
+from music_agent.ai.claude_client import AgentError
+from music_agent.pipeline import (
+    MAX_RESEARCH_ATTEMPTS,
+    DailySongPipeline,
+    PipelineError,
+)
 from music_agent.telegram.client import SentMessage, TelegramError
 
 
@@ -384,3 +389,55 @@ def test_a_song_nobody_received_is_not_recorded_as_published(pipeline_parts):
 
     # The song stays available for tomorrow rather than being silently burned.
     assert repository.total() == 0
+
+
+# --------------------------------------------------------------------- #
+# Research that comes back empty
+# --------------------------------------------------------------------- #
+
+
+class FlakyResearchAgent(FakeAgent):
+    """Fails research a set number of times before succeeding."""
+
+    def __init__(self, selections, dossier, *, failures: int) -> None:
+        super().__init__(selections, dossier)
+        self._remaining = failures
+        self.research_calls = 0
+
+    def research_song(self, selection):
+        self.research_calls += 1
+        if self._remaining:
+            self._remaining -= 1
+            raise AgentError("The research came back empty")
+        return self._dossier
+
+
+def test_empty_research_is_retried_before_the_day_is_lost(pipeline_parts):
+    settings, repository, telegram, dossier = pipeline_parts
+    _, year = target_of(repository)
+    agent = FlakyResearchAgent(
+        [selection("Natalie Imbruglia", "Torn", year)], dossier, failures=2
+    )
+
+    results = build(settings, repository, telegram, agent).run()
+
+    assert agent.research_calls == 3
+    assert results[0].published
+    assert len(telegram.sent) == 1
+
+
+def test_research_that_never_recovers_publishes_nothing_and_burns_no_song(pipeline_parts):
+    settings, repository, telegram, dossier = pipeline_parts
+    _, year = target_of(repository)
+    agent = FlakyResearchAgent(
+        [selection("Natalie Imbruglia", "Torn", year)], dossier, failures=MAX_RESEARCH_ATTEMPTS
+    )
+
+    with pytest.raises(AgentError, match="came back empty"):
+        build(settings, repository, telegram, agent).run()
+
+    # Nothing sent, and the song stays available for tomorrow rather than being
+    # recorded as published — which is what happened on 7 and 8 August.
+    assert telegram.sent == []
+    assert repository.total() == 0
+    assert not repository.exists("natalie-imbruglia::torn")

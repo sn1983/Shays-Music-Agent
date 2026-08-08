@@ -68,9 +68,11 @@ class FakeMessages:
     def __init__(self, results: list) -> None:
         self._results = list(results)
         self.models: list[str] = []
+        self.sent: list[list[dict]] = []
 
     def stream(self, **params):
         self.models.append(params["model"])
+        self.sent.append(params["messages"])
         result = self._results.pop(0) if self._results else self._results
         if isinstance(result, Exception):
             raise result
@@ -206,3 +208,142 @@ def test_a_malformed_payload_is_reported_not_swallowed(plan):
 
     with pytest.raises(AgentError, match="SongSelection"):
         agent.select_song(plan)
+
+
+# --------------------------------------------------------------------- #
+# Research that comes back empty
+# --------------------------------------------------------------------- #
+
+
+def dossier_payload(**overrides) -> str:
+    payload = {
+        "artist": "Natalie Imbruglia",
+        "title": "Torn",
+        "album": "Left of the Middle",
+        "release_year": 1997,
+        "genre": "Pop Rock",
+        "songwriters": "Scott Cutler",
+        "producer": "Phil Thornalley",
+        "album_cover_url": None,
+        "spotify_url": None,
+        "youtube_url": None,
+        "apple_music_url": None,
+        "wikipedia_url": None,
+        "official_website": None,
+        "lyrics_url": None,
+        "summary_he": "שיר שכולם זוכרים מהרדיו של סוף שנות התשעים, עם גיטרה נקייה ומלודיה שנדבקת.",
+        "facts": [
+            {"text": "השיר הוקלט במקור על ידי להקה אחרת.", "source": None},
+            {"text": "הקליפ צולם בלונדון.", "source": None},
+            {"text": "השיר שהה שבועות רבים במצעדים.", "source": None},
+        ],
+    }
+    payload.update(overrides)
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def a_song() -> SongSelection:
+    return SongSelection(
+        artist="Natalie Imbruglia",
+        title="Torn",
+        release_year=1997,
+        genre="Pop Rock",
+        category="big-hit",
+        reason="בדיקה",
+    )
+
+
+def test_research_returns_the_dossier_when_it_has_content():
+    agent, _ = make_agent([message(dossier_payload())])
+
+    dossier = agent.research_song(a_song())
+
+    assert dossier.title == "Torn"
+    assert len(dossier.facts) == 3
+
+
+def test_a_dossier_of_ellipses_is_refused_instead_of_published():
+    # Exactly what reached subscribers on 7 and 8 August: schema-valid, empty.
+    agent, _ = make_agent(
+        [
+            message(
+                dossier_payload(
+                    artist="...",
+                    title="...",
+                    album=",  ",
+                    genre="...",
+                    songwriters="...",
+                    producer="...",
+                    summary_he="...",
+                    facts=[],
+                )
+            )
+        ]
+    )
+
+    with pytest.raises(AgentError, match="came back empty"):
+        agent.research_song(a_song())
+
+
+def test_a_summary_too_short_to_be_the_story_is_refused():
+    agent, _ = make_agent([message(dossier_payload(summary_he="שיר טוב."))])
+
+    with pytest.raises(AgentError, match="summary_he"):
+        agent.research_song(a_song())
+
+
+def test_a_dossier_with_one_fact_is_refused():
+    agent, _ = make_agent(
+        [message(dossier_payload(facts=[{"text": "עובדה אחת בלבד.", "source": None}]))]
+    )
+
+    with pytest.raises(AgentError, match="usable facts: 1"):
+        agent.research_song(a_song())
+
+
+def test_two_facts_are_thin_but_accepted():
+    agent, _ = make_agent(
+        [
+            message(
+                dossier_payload(
+                    facts=[
+                        {"text": "עובדה ראשונה מעניינת.", "source": None},
+                        {"text": "עובדה שנייה מעניינת.", "source": None},
+                    ]
+                )
+            )
+        ]
+    )
+
+    assert len(agent.research_song(a_song()).facts) == 2
+
+
+def test_filler_in_an_optional_field_becomes_null():
+    agent, _ = make_agent([message(dossier_payload(album=",  ", producer="...", genre="-"))])
+
+    dossier = agent.research_song(a_song())
+
+    # The post used to render a lone comma on the album line.
+    assert dossier.album is None
+    assert dossier.producer is None
+    assert dossier.genre is None
+    assert dossier.songwriters == "Scott Cutler"
+
+
+def test_a_paused_research_turn_keeps_the_earlier_rounds():
+    agent, _ = make_agent(
+        [
+            message("", stop_reason="pause_turn"),
+            message("", stop_reason="pause_turn"),
+            message(dossier_payload()),
+        ]
+    )
+
+    agent.research_song(a_song())
+
+    sent = agent._client.messages.sent
+    # Every resume carries the whole conversation. Rebuilding it from the latest
+    # response alone dropped the search results from all previous rounds, which
+    # is how the model ended up with nothing to write about.
+    assert [len(conversation) for conversation in sent] == [1, 2, 3]
+    assert [turn["role"] for turn in sent[-1]] == ["user", "assistant", "assistant"]

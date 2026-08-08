@@ -75,6 +75,30 @@ REQUEST_TIMEOUT_SECONDS = 900.0
 
 _CODE_FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 
+#: Characters a model reaches for when it has nothing to say but the schema
+#: still requires a string. Stripped before judging whether a field has content.
+_FILLER_CHARS = " \t\n.…,-–—_'\"״׳"
+
+#: Whole values that carry no information even though they contain letters.
+_FILLER_WORDS = frozenset({"n/a", "na", "null", "none", "nil", "unknown", "tbd", "?"})
+
+#: A summary shorter than this is not the 80-150 word story the prompt asks for.
+_MIN_SUMMARY_CHARS = 40
+
+#: The brief says three facts. Two is a thin post but still worth sending; one
+#: or none means the research did not happen.
+_MIN_FACTS = 2
+
+
+def _is_filler(value: Optional[str]) -> bool:
+    """True when a field is empty, punctuation, or a stand-in for 'I don't know'."""
+    if value is None:
+        return True
+    stripped = value.strip(_FILLER_CHARS)
+    if not stripped or stripped.lower() in _FILLER_WORDS:
+        return True
+    return not any(character.isalnum() for character in stripped)
+
 
 class AgentError(RuntimeError):
     """Raised when Claude could not produce a usable result."""
@@ -123,7 +147,9 @@ class ClaudeMusicAgent:
             schema_model=SongDossier,
             tools=[_WEB_SEARCH_TOOL],
         )
-        return _validate(SongDossier, payload)
+        dossier = _validate(SongDossier, payload)
+        _reject_hollow(dossier)
+        return _clean_optional_fields(dossier)
 
     # ------------------------------------------------------------------ #
     # Internals
@@ -163,11 +189,14 @@ class ClaudeMusicAgent:
             if response.stop_reason == "pause_turn":
                 # A long server-tool turn hit its iteration limit; echo the
                 # assistant turn back and the server resumes where it stopped.
+                # Append rather than rebuild: the paused turn carries the search
+                # results gathered so far, and replacing the list would throw
+                # away every round before this one. A model resumed with no
+                # evidence cannot verify anything, and the schema still demands
+                # a string for artist, title and summary_he — so it fills them
+                # with placeholder ellipses instead of admitting defeat.
                 logger.info("Server tool loop paused, resuming (round %d).", attempt + 1)
-                messages = [
-                    {"role": "user", "content": user_prompt},
-                    {"role": "assistant", "content": response.content},
-                ]
+                messages = messages + [{"role": "assistant", "content": response.content}]
                 continue
 
             if response.stop_reason == "max_tokens":
@@ -252,6 +281,65 @@ def _extract_json(response: Any) -> dict[str, Any]:
         f"No JSON object in the response (stop_reason={response.stop_reason}, "
         f"errors={errors or 'no text blocks'})."
     )
+
+
+def _reject_hollow(dossier: SongDossier) -> None:
+    """Refuse a dossier that is structurally valid but says nothing.
+
+    A schema cannot express "this string must mean something". When research
+    goes wrong — the search tool returns nothing usable, or the accumulated
+    results are lost — the model still has to emit a string for every required
+    field, and what comes back is "..." in each one. That passed validation and
+    reached subscribers as a post with no artist, no title and no text. Catching
+    it here turns a silent bad post into a loud failure the caller can retry.
+    """
+    empty = [
+        name
+        for name in ("artist", "title", "summary_he")
+        if _is_filler(getattr(dossier, name))
+    ]
+    if len(dossier.summary_he.strip(_FILLER_CHARS)) < _MIN_SUMMARY_CHARS:
+        if "summary_he" not in empty:
+            empty.append("summary_he")
+
+    usable_facts = [fact for fact in dossier.facts if not _is_filler(fact.text)]
+    if empty or len(usable_facts) < _MIN_FACTS:
+        raise AgentError(
+            "The research came back empty — "
+            f"blank fields: {empty or 'none'}; usable facts: {len(usable_facts)} "
+            f"(need {_MIN_FACTS}). Refusing to publish a placeholder post."
+        )
+    if len(usable_facts) < 3:
+        logger.warning("Only %d of the 3 requested facts came back.", len(usable_facts))
+
+
+def _clean_optional_fields(dossier: SongDossier) -> SongDossier:
+    """Turn filler in the nullable fields into real nulls.
+
+    The formatter already omits a null album or producer, but it happily prints
+    a lone comma. Normalising here keeps that judgement in one place.
+    """
+    replacements = {
+        name: None
+        for name in (
+            "album",
+            "genre",
+            "songwriters",
+            "producer",
+            "album_cover_url",
+            "spotify_url",
+            "youtube_url",
+            "apple_music_url",
+            "wikipedia_url",
+            "official_website",
+            "lyrics_url",
+        )
+        if _is_filler(getattr(dossier, name))
+    }
+    if not replacements:
+        return dossier
+    logger.info("Dropped %d unusable field(s): %s", len(replacements), ", ".join(replacements))
+    return dossier.model_copy(update=replacements)
 
 
 def _validate(model: type[BaseModel], payload: dict[str, Any]) -> Any:
